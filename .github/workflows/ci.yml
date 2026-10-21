@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: x86_64-unknown-linux-musl
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test
+      - name: Static Linux binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cargo build --release --target x86_64-unknown-linux-musl
+          file target/x86_64-unknown-linux-musl/release/renfield | grep -q "statically linked"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renfield-linux
+          path: target/x86_64-unknown-linux-musl/release/renfield
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      # The end to end tests drive unix shells (bash, sleep, pgrep), so only the unit tests run here.
+      - name: Unit tests
+        run: cargo test --lib
+      - name: Release build
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renfield-windows
+          path: target/release/renfield.exe

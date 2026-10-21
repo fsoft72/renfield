@@ -24,3 +24,4 @@
 - The name a machine gives itself in pairings now comes from the OS host name (gethostname on unix, COMPUTERNAME on Windows), so macOS no longer falls back to a fixed name.
 - The private key is created owner-only from the start (mode 0600 at creation) instead of being chmod-ed after it was written.
 - The pairing question has a 300 s time limit, a newer question replaces a pending older one, and a source that disconnects while dest is waiting for the human frees the pairing slot without closing the window, so no stale prompt blocks a retry.
+- Added a GitHub Actions workflow (.github/workflows/ci.yml): fmt, clippy, tests and a static musl binary on Linux; clippy, unit tests and a release build on Windows. Not run yet (no remote), but its steps were checked locally, including the Windows unit tests under Wine.
