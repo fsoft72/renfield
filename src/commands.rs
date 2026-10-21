@@ -28,6 +28,10 @@ pub async fn dispatch(dir: &Path, command: Command) -> Result<i32, RenfieldError
             let window = accept_key.then(|| Duration::from_secs(timeout));
             listen(dir, port, config, window).await.map(|_| 0)
         }
+        Command::Mcp => crate::mcp::run_stdio(dir.to_path_buf())
+            .await
+            .map(|_| 0)
+            .map_err(|e| RenfieldError::Io(format!("MCP server stopped: {e}"))),
         Command::Put {
             name,
             local,

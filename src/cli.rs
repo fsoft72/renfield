@@ -32,6 +32,8 @@ pub enum Command {
         #[arg(long, default_value_t = 120)]
         timeout: u64,
     },
+    /// Run as an MCP server on stdio, giving Claude Code tools for the paired machines.
+    Mcp,
     /// Copy a local file to a paired machine.
     Put {
         /// Name of the machine in the registry.
