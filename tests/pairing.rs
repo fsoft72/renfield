@@ -453,3 +453,44 @@ fn local_name_is_always_a_valid_pairing_name() {
         &renfield::pairing::local_name()
     ));
 }
+
+#[tokio::test]
+async fn peer_vanishing_during_the_prompt_frees_the_slot_and_keeps_the_window_open() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let gated = Arc::new(Gated {
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+    });
+    let dest = start_dest(Some(gated), true).await;
+    let (_dir, id) = new_source();
+    let mut conn = client::connect_addr(&id, "x", &dest.addr.to_string(), None)
+        .await
+        .unwrap();
+    conn.send_request(&renfield::proto::Request::PairOffer {
+        source_name: "laptop".into(),
+        both: false,
+        source_listen_port: None,
+    })
+    .await
+    .unwrap();
+    tokio::task::spawn_blocking(move || entered_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(conn);
+    // The human has not answered yet, but the source is gone: a legitimate source must be able to retry.
+    let mut freed = false;
+    for _ in 0..30 {
+        if dest.policy.try_begin_pairing() {
+            freed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    release_tx.send(false).ok();
+    assert!(
+        freed,
+        "the pairing slot stayed taken by a prompt nobody is waiting for"
+    );
+}

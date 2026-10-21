@@ -89,6 +89,11 @@ impl FilePolicy {
             .is_ok()
     }
 
+    /// Frees the pairing slot without closing the window (the source vanished before any decision).
+    pub fn release_pairing_slot(&self) {
+        self.busy.store(false, Ordering::SeqCst);
+    }
+
     /// Ends the running pairing and closes the window: one attempt per window.
     pub fn finish_pairing(&self) {
         self.set_pairing(false);

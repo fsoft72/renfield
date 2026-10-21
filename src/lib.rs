@@ -11,6 +11,7 @@ pub mod home;
 pub mod identity;
 pub mod mcp;
 pub mod pairing;
+pub mod prompt;
 pub mod proto;
 pub mod server;
 pub mod store;

@@ -1,6 +1,5 @@
 //! Two phase pairing: dest accepts an offered key, source confirms, and only then both sides store it.
 
-use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,26 +22,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(300);
 const NOT_PAIRING: &str =
     "this machine is not accepting new keys. Start it with: renfield listen --accept-key";
 
-/// Asks a human a yes/no question.
-pub trait Prompt: Send + Sync {
-    /// Shows `text` and returns true only when the human answers yes.
-    fn confirm(&self, text: &str) -> bool;
-}
-
-/// Prompt that talks to the terminal: prints the text and reads a line from stdin.
-pub struct TerminalPrompt;
-
-impl Prompt for TerminalPrompt {
-    fn confirm(&self, text: &str) -> bool {
-        print!("{text} ");
-        let _ = std::io::stdout().flush();
-        let mut line = String::new();
-        if std::io::stdin().lock().read_line(&mut line).is_err() {
-            return false;
-        }
-        matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
-    }
-}
+pub use crate::prompt::{Prompt, TerminalPrompt};
 
 /// Longest machine name accepted in a pairing.
 pub const MAX_NAME_LEN: usize = 64;
@@ -136,12 +116,27 @@ pub struct DestContext<'a> {
 }
 
 /// Releases the single pairing slot (and closes the window) however the exchange ends.
-struct Slot<'a>(&'a FilePolicy);
+struct Slot<'a> {
+    policy: &'a FilePolicy,
+    /// False when the source vanished before any decision: the window then stays open for a retry.
+    close_window: bool,
+}
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
-        self.0.finish_pairing();
+        if self.close_window {
+            self.policy.finish_pairing();
+        } else {
+            self.policy.release_pairing_slot();
+        }
     }
+}
+
+/// Completes when the peer hangs up (or sends bytes it must not send while waiting).
+async fn peer_gone<S: AsyncRead + Unpin>(stream: &mut S) {
+    use tokio::io::AsyncReadExt;
+    let mut scratch = [0u8; 1];
+    let _ = stream.read(&mut scratch).await;
 }
 
 /// Sends an error answer.
@@ -179,7 +174,10 @@ where
     if !ctx.policy.try_begin_pairing() {
         return refuse(stream, "pairing in progress, try again later").await;
     }
-    let _slot = Slot(ctx.policy);
+    let mut slot = Slot {
+        policy: ctx.policy,
+        close_window: true,
+    };
     let mut headline = format!(
         "Pairing request from '{}' at {}.",
         offer.source_name, ctx.peer_addr
@@ -196,7 +194,15 @@ where
         ctx.peer_fingerprint,
         "Accept this key?",
     );
-    if !ask(prompt, text).await {
+    let answer = tokio::select! {
+        accepted = ask(prompt, text) => Some(accepted),
+        () = peer_gone(stream) => None,
+    };
+    let Some(accepted) = answer else {
+        slot.close_window = false;
+        return Ok(());
+    };
+    if !accepted {
         return refuse(stream, "pairing rejected on the other machine").await;
     }
     proto::send(
