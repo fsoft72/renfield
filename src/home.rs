@@ -42,6 +42,25 @@ pub fn expand(path: &str) -> PathBuf {
     if p.is_absolute() { p } else { home.join(p) }
 }
 
+/// Writes a secret file that is owner-only from the moment it exists (no window with wider permissions).
+pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("cannot create {}", path.display()))?;
+    file.write_all(data)
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    // A file that already existed keeps its old mode: tighten it as well.
+    restrict_permissions(path)
+}
+
 /// Restricts a file so that only its owner can read and write it (no-op on non unix systems).
 pub fn restrict_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
@@ -91,5 +110,35 @@ mod tests {
         assert_eq!(expand("proj/src"), home.join("proj/src"));
         let abs = std::env::temp_dir();
         assert_eq!(expand(abs.to_str().unwrap()), abs);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_creates_the_file_owner_only_even_with_a_permissive_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("secret");
+        // SAFETY: umask only changes the process file mode mask; restored right after.
+        let old = unsafe { libc::umask(0) };
+        let created = write_private(&f, b"key bytes");
+        unsafe { libc::umask(old) };
+        created.unwrap();
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read(&f).unwrap(), b"key bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_tightens_an_existing_loose_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("secret");
+        std::fs::write(&f, b"old").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&f, b"new").unwrap();
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read(&f).unwrap(), b"new");
     }
 }

@@ -43,9 +43,7 @@ impl Identity {
             cert_der: cert.der().to_vec(),
             key_der: key.serialize_der(),
         };
-        std::fs::write(&key_path, &identity.key_der)
-            .with_context(|| format!("cannot write {}", key_path.display()))?;
-        home::restrict_permissions(&key_path)?;
+        home::write_private(&key_path, &identity.key_der)?;
         std::fs::write(&cert_path, &identity.cert_der)
             .with_context(|| format!("cannot write {}", cert_path.display()))?;
         Ok(identity)
