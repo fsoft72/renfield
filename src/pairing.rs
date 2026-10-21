@@ -44,16 +44,47 @@ impl Prompt for TerminalPrompt {
     }
 }
 
-/// Returns the name this machine gives itself in pairings (its host name).
+/// Longest machine name accepted in a pairing.
+pub const MAX_NAME_LEN: usize = 64;
+/// Name used when the host name is empty or unusable.
+const FALLBACK_NAME: &str = "renfield-host";
+
+/// Tells whether a name is safe to show to a human and to store: letters, digits, `.`, `_`, `-`.
+pub fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME_LEN
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Turns any text into a valid name: unsafe characters become `-`, the length is capped.
+pub fn clean_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(MAX_NAME_LEN)
+        .collect();
+    if cleaned.is_empty() {
+        FALLBACK_NAME.to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Returns the name this machine gives itself in pairings (its host name, made safe).
 pub fn local_name() -> String {
     let from_env = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME"));
     let name = from_env
         .ok()
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok());
-    match name.map(|n| n.trim().to_string()) {
-        Some(n) if !n.is_empty() => n,
-        _ => "renfield-host".to_string(),
-    }
+    clean_name(name.as_deref().map(str::trim).unwrap_or_default())
 }
 
 /// Builds the question shown on both machines: the same two keys, with the labels swapped.
@@ -121,6 +152,12 @@ where
     };
     if !ctx.policy.pairing_open() {
         return refuse(stream, NOT_PAIRING).await;
+    }
+    if !is_valid_name(&offer.source_name) {
+        let message = format!(
+            "invalid source name: use only letters, digits, '.', '_' and '-' (at most {MAX_NAME_LEN} characters)"
+        );
+        return refuse(stream, &message).await;
     }
     if !ctx.policy.try_begin_pairing() {
         return refuse(stream, "pairing in progress, try again later").await;
@@ -230,7 +267,7 @@ pub async fn source_flow(p: PairParams, prompt: Arc<dyn Prompt>) -> Result<(), R
         .peer_fingerprint()
         .ok_or_else(|| RenfieldError::Protocol("dest presented no certificate".into()))?;
     conn.send_request(&Request::PairOffer {
-        source_name: p.own_name.clone(),
+        source_name: clean_name(&p.own_name),
         both: p.both,
         source_listen_port: p.listen_port,
     })

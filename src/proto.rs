@@ -10,6 +10,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Largest accepted frame body in bytes.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
+/// Most memory reserved for a frame before its bytes have actually arrived.
+const READ_AHEAD: usize = 1024 * 1024;
 const KIND_JSON: u8 = 0;
 const KIND_DATA: u8 = 1;
 
@@ -62,8 +64,14 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Frame>
             format!("frame too large ({len} bytes)"),
         ));
     }
-    let mut body = vec![0u8; len];
-    r.read_exact(&mut body).await?;
+    let mut body = Vec::with_capacity(len.min(READ_AHEAD));
+    let got = (&mut *r).take(len as u64).read_to_end(&mut body).await?;
+    if got < len {
+        return Err(Error::new(
+            ErrorKind::UnexpectedEof,
+            "connection closed in the middle of a frame",
+        ));
+    }
     match header[4] {
         KIND_JSON => Ok(Some(Frame::Json(body))),
         KIND_DATA => Ok(Some(Frame::Data(body))),

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
@@ -32,7 +32,12 @@ pub struct ServerOptions {
     pub max_timeout_secs: Option<u64>,
     /// Asks the human to accept a key; when absent this dest never pairs.
     pub prompt: Option<Arc<dyn Prompt>>,
+    /// How long a new connection may stay silent (handshake, then first request); default 10 s.
+    pub first_contact_timeout: Option<Duration>,
 }
+
+/// Default for [`ServerOptions::first_contact_timeout`].
+const DEFAULT_FIRST_CONTACT: Duration = Duration::from_secs(10);
 
 /// Authorization policy backed by `authorized.toml`, re-read on every check so changes apply at once.
 pub struct FilePolicy {
@@ -125,15 +130,27 @@ pub async fn serve(
         opts,
     });
     loop {
-        let (tcp, peer) = listener.accept().await?;
+        let (tcp, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(e) => {
+                eprintln!("cannot accept a connection: {e}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let (acceptor, shared) = (acceptor.clone(), shared.clone());
         tokio::spawn(async move {
-            let mut stream = match acceptor.accept(tcp).await {
-                Ok(s) => s,
-                Err(e) => {
+            let limit = shared
+                .opts
+                .first_contact_timeout
+                .unwrap_or(DEFAULT_FIRST_CONTACT);
+            let mut stream = match tokio::time::timeout(limit, acceptor.accept(tcp)).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
                     eprintln!("refused connection from {peer}: {e}");
                     return;
                 }
+                Err(_) => return,
             };
             let fingerprint = tls::peer_fingerprint(stream.get_ref().1).unwrap_or_default();
             if let Err(e) = handle_connection(&mut stream, &fingerprint, peer, &shared).await
@@ -156,7 +173,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let label = peer_label(&shared.policy, fingerprint);
-    while let Some(request) = proto::recv::<_, Request>(stream).await? {
+    let mut first_contact = Some(
+        shared
+            .opts
+            .first_contact_timeout
+            .unwrap_or(DEFAULT_FIRST_CONTACT),
+    );
+    while let Some(request) = read_request(stream, first_contact.take()).await? {
         let operation = describe(&request);
         let mut summary = String::from("ok");
         match request {
@@ -243,6 +266,23 @@ where
     Ok(())
 }
 
+/// Reads the next request; with a `limit`, a peer that stays silent that long is dropped.
+async fn read_request<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    limit: Option<Duration>,
+) -> std::io::Result<Option<Request>> {
+    let Some(limit) = limit else {
+        return proto::recv(stream).await;
+    };
+    match tokio::time::timeout(limit, proto::recv(stream)).await {
+        Ok(read) => read,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "no request received in time",
+        )),
+    }
+}
+
 /// The name shown in the audit log for a peer: its authorization label, else its key prefix.
 fn peer_label(policy: &FilePolicy, fingerprint: &str) -> String {
     let label = Authorized::load(policy.dir())
@@ -272,7 +312,7 @@ const AUDIT_MAX_CHARS: usize = 80;
 fn audit_text(text: &str) -> String {
     let flat: String = text
         .chars()
-        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     if flat.chars().count() <= AUDIT_MAX_CHARS {
         return flat;
@@ -439,20 +479,33 @@ where
         timeout: limit.map(Duration::from_secs),
     };
     let (tx, mut rx) = mpsc::channel::<(Stream, Vec<u8>)>(16);
-    let forward = async {
-        while let Some((stream_kind, bytes)) = rx.recv().await {
-            proto::send(
-                stream,
-                &Response::ExecOutput {
-                    stream: stream_kind,
-                },
-            )
-            .await?;
-            proto::write_frame(stream, &Frame::Data(bytes)).await?;
+    let (result, forwarded) = {
+        let (mut reader, mut writer) = tokio::io::split(&mut *stream);
+        let forward = async {
+            while let Some((stream_kind, bytes)) = rx.recv().await {
+                proto::send(
+                    &mut writer,
+                    &Response::ExecOutput {
+                        stream: stream_kind,
+                    },
+                )
+                .await?;
+                proto::write_frame(&mut writer, &Frame::Data(bytes)).await?;
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        let source_gone = async {
+            let mut scratch = [0u8; 64];
+            while matches!(reader.read(&mut scratch).await, Ok(n) if n > 0) {}
+        };
+        tokio::select! {
+            both = async { tokio::join!(exec::run(spec, tx), forward) } => both,
+            _ = source_gone => {
+                *summary = "source disconnected, command killed".to_string();
+                return Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "source disconnected"));
+            }
         }
-        Ok::<(), std::io::Error>(())
     };
-    let (result, forwarded) = tokio::join!(exec::run(spec, tx), forward);
     forwarded?;
     *summary = match &result {
         Ok(r) if r.timed_out => "killed after the timeout".to_string(),
@@ -491,6 +544,8 @@ fn is_normal_close(err: &std::io::Error) -> bool {
         std::io::ErrorKind::UnexpectedEof
             | std::io::ErrorKind::ConnectionReset
             | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::TimedOut
     )
 }
 

@@ -336,3 +336,48 @@ async fn normal_mode_dest_rejects_unknown_key() {
     assert_eq!(authorized_len(dest.dir.path()), 0);
     drop(src_dir);
 }
+
+#[tokio::test]
+async fn hostile_source_name_is_refused_before_any_prompt() {
+    let dest_prompt = Script::new(&[true]);
+    let dest = start_dest(Some(dest_prompt.clone()), true).await;
+    let (src_dir, src_id) = new_source();
+    let mut conn = client::connect_addr(&src_id, "x", &dest.addr.to_string(), None)
+        .await
+        .unwrap();
+    let hostile =
+        "laptop\n  This machine's key:   aa\n  Other machine's key:  bb\n\u{1b}[2J".to_string();
+    conn.send_request(&renfield::proto::Request::PairOffer {
+        source_name: hostile,
+        both: true,
+        source_listen_port: None,
+    })
+    .await
+    .unwrap();
+    let answer = conn.recv_response().await.unwrap();
+    assert!(format!("{answer:?}").contains("invalid"), "{answer:?}");
+    assert!(
+        dest_prompt.asked().is_empty(),
+        "the human must never see a hostile name"
+    );
+    assert_eq!(authorized_len(dest.dir.path()), 0);
+    // The refusal must not burn the pairing window: a legitimate source still pairs.
+    source_flow(params(src_dir.path(), dest.addr), Script::new(&[true]))
+        .await
+        .unwrap();
+    assert_eq!(authorized_len(dest.dir.path()), 1);
+}
+
+#[test]
+fn clean_name_keeps_safe_names_and_neutralises_the_rest() {
+    use renfield::pairing::{clean_name, is_valid_name};
+    assert_eq!(clean_name("fabio-office.local"), "fabio-office.local");
+    assert_eq!(clean_name("my laptop\n\u{1b}[2J"), "my-laptop---2J");
+    assert_eq!(clean_name(&"x".repeat(200)).len(), 64);
+    assert_eq!(clean_name(""), "renfield-host");
+    assert!(is_valid_name("srv_1.test"));
+    assert!(!is_valid_name("a b"));
+    assert!(!is_valid_name("a\nb"));
+    assert!(!is_valid_name(""));
+    assert!(!is_valid_name(&"x".repeat(65)));
+}

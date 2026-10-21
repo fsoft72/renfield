@@ -16,6 +16,11 @@ use crate::proto::{ShellKind, Stream};
 const PUMP_GRACE: Duration = Duration::from_secs(1);
 /// Size of the buffer used to read command output.
 const CHUNK: usize = 8192;
+/// Windows flag: give the child its own hidden console, so it cannot change dest's console (code page).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// How long to wait for a killed process to be reaped before giving up on its exit status.
+const KILL_GRACE: Duration = Duration::from_secs(5);
 /// PowerShell prefix that makes its output UTF-8.
 const PS_UTF8: &str = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ";
 
@@ -78,6 +83,11 @@ fn build(spec: &ExecSpec) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -98,7 +108,23 @@ fn kill_tree(pid: Option<u32>) {
     {
         let _ = std::process::Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
-            .output();
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
+/// Kills the command's whole process tree when dropped before it finished (for example when the caller gives up).
+struct KillOnDrop {
+    pid: Option<u32>,
+    armed: bool,
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            kill_tree(self.pid);
+        }
     }
 }
 
@@ -152,20 +178,24 @@ pub async fn run(spec: ExecSpec, tx: mpsc::Sender<(Stream, Vec<u8>)>) -> Result<
         format!("cannot start shell '{program}' on this machine (pick another with --shell)")
     })?;
     let pid = child.id();
+    let mut reaper = KillOnDrop { pid, armed: true };
     let stdout = child.stdout.take().context("stdout not captured")?;
     let stderr = child.stderr.take().context("stderr not captured")?;
     let mut out_task: JoinHandle<()> = tokio::spawn(pump(stdout, Stream::Stdout, tx.clone()));
     let mut err_task: JoinHandle<()> = tokio::spawn(pump(stderr, Stream::Stderr, tx));
     let (status, timed_out) = match spec.timeout {
-        None => (child.wait().await?, false),
+        None => (Some(child.wait().await?), false),
         Some(limit) => match tokio::time::timeout(limit, child.wait()).await {
-            Ok(status) => (status?, false),
+            Ok(status) => (Some(status?), false),
             Err(_) => {
                 kill_tree(pid);
-                (child.wait().await?, true)
+                let _ = child.start_kill();
+                let reaped = tokio::time::timeout(KILL_GRACE, child.wait()).await;
+                (reaped.ok().and_then(Result::ok), true)
             }
         },
     };
+    reaper.armed = false;
     let drained = async {
         let _ = (&mut out_task).await;
         let _ = (&mut err_task).await;
@@ -175,7 +205,7 @@ pub async fn run(spec: ExecSpec, tx: mpsc::Sender<(Stream, Vec<u8>)>) -> Result<
         err_task.abort();
     }
     Ok(ExecResult {
-        exit_code: exit_code_of(status),
+        exit_code: status.and_then(exit_code_of),
         timed_out,
     })
 }

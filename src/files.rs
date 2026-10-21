@@ -18,6 +18,15 @@ pub const MAX_LIST_ENTRIES: usize = 10_000;
 /// How many leading bytes are inspected to recognise a binary file.
 const BINARY_SNIFF: usize = 8192;
 
+/// Follows a symbolic link so that writes go through it instead of replacing it.
+fn real_target(path: PathBuf) -> PathBuf {
+    let is_link = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+    if !is_link {
+        return path;
+    }
+    fs::canonicalize(&path).unwrap_or(path)
+}
+
 /// Tells whether every line break of the data is CRLF (and there is at least one).
 fn is_crlf(bytes: &[u8]) -> bool {
     let lf = bytes.iter().filter(|&&b| b == b'\n').count();
@@ -99,7 +108,7 @@ pub fn read_text(path: &str, offset: Option<usize>, limit: Option<usize>) -> Res
 
 /// Creates or overwrites a text file atomically, keeping CRLF endings of an existing file.
 pub fn write_text(path: &str, content: &str) -> Result<usize> {
-    let target = home::expand(path);
+    let target = real_target(home::expand(path));
     let existing = fs::read(&target).ok();
     let data = match &existing {
         Some(old) if is_crlf(old) => content.replace("\r\n", "\n").replace('\n', "\r\n"),
@@ -118,7 +127,7 @@ pub fn edit_text(path: &str, old: &str, new: &str, replace_all: bool) -> Result<
     if old == new {
         bail!("old_string and new_string are identical, nothing to change");
     }
-    let target = home::expand(path);
+    let target = real_target(home::expand(path));
     let text = read_utf8(&target, path)?;
     let crlf = is_crlf(text.as_bytes());
     let (work, old, new) = if crlf {
@@ -376,5 +385,32 @@ mod tests {
             list(&p(&d, "my dir"), false).unwrap().entries[0].name,
             "caffè è.txt"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edit_writes_through_a_symlink() {
+        let d = tmp();
+        let real = p(&d, "real.txt");
+        let link = p(&d, "link.txt");
+        std::fs::write(&real, "alpha\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        edit_text(&link, "alpha", "beta", false).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link was replaced"
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "beta\n");
+        write_text(&link, "gamma\n").unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "gamma\n");
     }
 }

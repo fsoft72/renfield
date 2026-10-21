@@ -109,6 +109,7 @@ pub async fn listen(
         default_cwd: cfg.default_cwd,
         max_timeout_secs: cfg.max_timeout_secs,
         prompt: None,
+        ..ServerOptions::default()
     };
     if let Some(window) = pairing_window {
         opts.prompt = Some(Arc::new(TerminalPrompt));
