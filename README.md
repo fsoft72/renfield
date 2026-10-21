@@ -497,3 +497,7 @@ The end to end tests start a real dest in the test process and also drive the co
 | `src/error.rs`, `src/timefmt.rs` | Errors and exit codes; UTC time formatting. |
 
 The design document is `docs/superpowers/specs/2026-10-21-renfield-design.md` and the implementation plan `docs/superpowers/plans/2026-10-21-renfield.md`. `CHANGES.md` lists what changed, in order.
+
+## License
+
+MIT, see `LICENSE`.

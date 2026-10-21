@@ -26,3 +26,4 @@
 - The pairing question has a 300 s time limit, a newer question replaces a pending older one, and a source that disconnects while dest is waiting for the human frees the pairing slot without closing the window, so no stale prompt blocks a retry.
 - Added a GitHub Actions workflow (.github/workflows/ci.yml): fmt, clippy, tests and a static musl binary on Linux; clippy, unit tests and a release build on Windows. Not run yet (no remote), but its steps were checked locally, including the Windows unit tests under Wine.
 - Rewrote README.md as a complete usage guide: install, five minute tour, pairing in detail (including --both), exec, put/get, Claude Code setup and tools, machine and key management, day to day operation, configuration, security model, exit codes, troubleshooting, how it works, status and development.
+- Added the MIT license (LICENSE), the `license` field in Cargo.toml and a License section in README.md.
