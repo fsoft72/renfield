@@ -146,6 +146,23 @@ pub enum Request {
         cwd: Option<String>,
         timeout_secs: Option<u64>,
     },
+    /// Read a UTF-8 text file; `offset` is the 1-based first line, `limit` the number of lines.
+    ReadFile {
+        path: String,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    },
+    /// Create or overwrite a UTF-8 text file (parent directories are created).
+    WriteFile { path: String, content: String },
+    /// Replace an exact string in a text file.
+    EditFile {
+        path: String,
+        old_string: String,
+        new_string: String,
+        replace_all: bool,
+    },
+    /// List a directory.
+    ListDir { path: String, recursive: bool },
     /// Offer this machine's key for pairing; `both` also asks dest to be able to command source.
     PairOffer {
         source_name: String,
@@ -169,10 +186,52 @@ pub enum Response {
         exit_code: Option<i32>,
         timed_out: bool,
     },
+    /// Answer to `ReadFile`.
+    FileText(ReadResult),
+    /// Answer to `WriteFile`: bytes written.
+    FileWritten { bytes: usize },
+    /// Answer to `EditFile`: how many replacements were made.
+    FileEdited { replacements: usize },
+    /// Answer to `ListDir`.
+    DirListing(ListResult),
     /// Dest accepted the offered key and waits for the source to commit or abort.
     PairOffered { dest_name: String },
     /// The pairing was stored on dest.
     PairDone,
     /// The request failed; the message explains why.
     Error { message: String },
+}
+
+/// The part of a text file selected by a read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReadResult {
+    /// The selected lines, joined with `\n` (line endings normalized).
+    pub text: String,
+    /// 1-based number of the first returned line.
+    pub first_line: usize,
+    /// Number of lines in the whole file.
+    pub total_lines: usize,
+    /// True when the output was cut at the size cap.
+    pub truncated: bool,
+}
+
+/// One entry of a directory listing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DirEntry {
+    /// Name, relative to the listed directory (with `/` separators when recursive).
+    pub name: String,
+    /// `file`, `dir`, `symlink` or `other`.
+    pub kind: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// Modification time, seconds since the Unix epoch.
+    pub mtime_secs: i64,
+}
+
+/// A directory listing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListResult {
+    pub entries: Vec<DirEntry>,
+    /// True when the listing was cut at the entry cap.
+    pub truncated: bool,
 }

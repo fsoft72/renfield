@@ -6,6 +6,7 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod exec;
+pub mod files;
 pub mod home;
 pub mod identity;
 pub mod pairing;

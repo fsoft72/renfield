@@ -9,10 +9,12 @@ use tokio_rustls::client::TlsStream;
 
 use crate::error::RenfieldError;
 use crate::identity::Identity;
-use crate::proto::{self, Frame, Request, Response, ShellKind, Stream};
+use crate::proto::{self, Frame, ListResult, ReadResult, Request, Response, ShellKind, Stream};
 use crate::store::Registry;
 use crate::tls;
 
+/// Largest text accepted by `write_file` (bigger files go through `put`).
+pub const MAX_WRITE_BYTES: usize = 8 * 1024 * 1024;
 /// How long to wait for the TCP connection before giving up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -114,6 +116,104 @@ impl Conn {
                 self.machine
             ))
         })
+    }
+
+    /// Sends a request and returns its single answer; a remote `Error` becomes `RenfieldError::Remote`.
+    async fn call(&mut self, request: Request) -> Result<Response, RenfieldError> {
+        self.send_request(&request).await?;
+        match self.recv_response().await? {
+            Response::Error { message } => Err(RenfieldError::Remote(format!(
+                "'{}' reported: {message}",
+                self.machine
+            ))),
+            other => Ok(other),
+        }
+    }
+
+    /// Builds the error for an answer of the wrong kind.
+    fn unexpected(&self, response: Response) -> RenfieldError {
+        RenfieldError::Protocol(format!(
+            "unexpected answer from '{}': {response:?}",
+            self.machine
+        ))
+    }
+
+    /// Reads lines of a UTF-8 text file on the remote machine.
+    pub async fn read_file(
+        &mut self,
+        path: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<ReadResult, RenfieldError> {
+        match self
+            .call(Request::ReadFile {
+                path: path.into(),
+                offset,
+                limit,
+            })
+            .await?
+        {
+            Response::FileText(r) => Ok(r),
+            other => Err(self.unexpected(other)),
+        }
+    }
+
+    /// Creates or overwrites a text file on the remote machine; returns the bytes written.
+    pub async fn write_file(&mut self, path: &str, content: &str) -> Result<usize, RenfieldError> {
+        if content.len() > MAX_WRITE_BYTES {
+            return Err(RenfieldError::Usage(format!(
+                "content is {} bytes, more than the {MAX_WRITE_BYTES} byte limit of a text write: use 'renfield put' for big files",
+                content.len()
+            )));
+        }
+        match self
+            .call(Request::WriteFile {
+                path: path.into(),
+                content: content.into(),
+            })
+            .await?
+        {
+            Response::FileWritten { bytes } => Ok(bytes),
+            other => Err(self.unexpected(other)),
+        }
+    }
+
+    /// Replaces an exact string in a remote text file; returns the number of replacements.
+    pub async fn edit_file(
+        &mut self,
+        path: &str,
+        old: &str,
+        new: &str,
+        replace_all: bool,
+    ) -> Result<usize, RenfieldError> {
+        let request = Request::EditFile {
+            path: path.into(),
+            old_string: old.into(),
+            new_string: new.into(),
+            replace_all,
+        };
+        match self.call(request).await? {
+            Response::FileEdited { replacements } => Ok(replacements),
+            other => Err(self.unexpected(other)),
+        }
+    }
+
+    /// Lists a remote directory.
+    pub async fn list_dir(
+        &mut self,
+        path: &str,
+        recursive: bool,
+    ) -> Result<ListResult, RenfieldError> {
+        match self
+            .call(Request::ListDir {
+                path: path.into(),
+                recursive,
+            })
+            .await?
+        {
+            Response::DirListing(l) => Ok(l),
+            other => Err(self.unexpected(other)),
+        }
     }
 
     /// Runs a command remotely, calling `on_output` for every chunk as it arrives.

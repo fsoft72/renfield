@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 
 use crate::exec::{self, ExecSpec};
+use crate::files;
 use crate::home;
 use crate::identity::Identity;
 use crate::pairing::{self, DestContext, Offer, Prompt};
@@ -189,6 +190,13 @@ where
             } => {
                 handle_exec(stream, &shared.opts, command, shell, cwd, timeout_secs).await?;
             }
+            Request::ReadFile { .. }
+            | Request::WriteFile { .. }
+            | Request::EditFile { .. }
+            | Request::ListDir { .. } => {
+                let response = handle_file_request(request).await;
+                proto::send(stream, &response).await?;
+            }
             Request::PairCommit | Request::PairAbort => {
                 let message = "unexpected pairing message, no pairing is in progress".to_string();
                 return proto::send(stream, &Response::Error { message }).await;
@@ -196,6 +204,42 @@ where
         }
     }
     Ok(())
+}
+
+/// Serves a file request on a blocking thread and turns any failure into an `Error` answer.
+async fn handle_file_request(request: Request) -> Response {
+    let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Response> {
+        match request {
+            Request::ReadFile {
+                path,
+                offset,
+                limit,
+            } => files::read_text(&path, offset, limit).map(Response::FileText),
+            Request::WriteFile { path, content } => {
+                files::write_text(&path, &content).map(|bytes| Response::FileWritten { bytes })
+            }
+            Request::EditFile {
+                path,
+                old_string,
+                new_string,
+                replace_all,
+            } => files::edit_text(&path, &old_string, &new_string, replace_all)
+                .map(|replacements| Response::FileEdited { replacements }),
+            Request::ListDir { path, recursive } => {
+                files::list(&path, recursive).map(Response::DirListing)
+            }
+            _ => anyhow::bail!("not a file request"),
+        }
+    });
+    match work.await {
+        Ok(Ok(response)) => response,
+        Ok(Err(e)) => Response::Error {
+            message: format!("{e:#}"),
+        },
+        Err(e) => Response::Error {
+            message: format!("file operation failed: {e}"),
+        },
+    }
 }
 
 /// Runs a command and streams its output back, ending with `ExecDone` or `Error`.
