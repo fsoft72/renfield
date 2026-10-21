@@ -23,6 +23,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Conn {
     stream: TlsStream<TcpStream>,
     machine: String,
+    /// True once dest has sent at least one answer on this connection.
+    answered: bool,
 }
 
 /// What to run remotely.
@@ -81,6 +83,7 @@ pub async fn connect_addr(
         .await
         .map_err(|e| tls::map_io_error(machine, &e))?;
     Ok(Conn {
+        answered: false,
         stream,
         machine: machine.to_string(),
     })
@@ -98,8 +101,20 @@ impl Conn {
     }
 
     /// Maps an I/O error of this connection to a renfield error.
+    ///
+    /// A connection that dies before dest ever answered is, almost always, a dest that refused our key:
+    /// it closes right after the handshake, and depending on timing we see a reset or a broken pipe
+    /// instead of the TLS alert. Those are reported as "not authorized" so the advice is the right one.
     fn io(&self, e: std::io::Error) -> RenfieldError {
-        tls::map_io_error(&self.machine, &e)
+        use std::io::ErrorKind::{BrokenPipe, ConnectionReset, UnexpectedEof};
+        let mapped = tls::map_io_error(&self.machine, &e);
+        let refused = !self.answered
+            && matches!(mapped, RenfieldError::Io(_))
+            && matches!(e.kind(), BrokenPipe | ConnectionReset | UnexpectedEof);
+        if refused {
+            return RenfieldError::NotAuthorized(self.machine.clone());
+        }
+        mapped
     }
 
     /// Sends one request.
@@ -114,6 +129,7 @@ impl Conn {
         let response = proto::recv::<_, Response>(&mut self.stream)
             .await
             .map_err(|e| self.io(e))?;
+        self.answered |= response.is_some();
         response.ok_or_else(|| {
             RenfieldError::Io(format!(
                 "'{}' closed the connection unexpectedly",

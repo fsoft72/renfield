@@ -73,3 +73,50 @@ async fn source_disconnect_kills_the_running_command() {
     }
     panic!("the command kept running after the source disconnected");
 }
+
+#[tokio::test]
+async fn connection_dropped_before_any_answer_is_reported_as_not_authorized() {
+    use renfield::error::RenfieldError;
+    use renfield::identity::Identity;
+    use renfield::server::FilePolicy;
+    use renfield::tls;
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
+
+    // A dest that completes the handshake and then hangs up, as a rejecting dest does when the
+    // client sends its request after the connection was already closed.
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::load_or_create(dir.path()).unwrap();
+    let policy = std::sync::Arc::new(FilePolicy::new(dir.path()));
+    policy.set_pairing(true);
+    let acceptor = TlsAcceptor::from(tls::server_config(&id, policy).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _) = listener.accept().await.unwrap();
+            drop(acceptor.accept(tcp).await);
+        }
+    });
+
+    let client_dir = tempfile::tempdir().unwrap();
+    let client_id = Identity::load_or_create(client_dir.path()).unwrap();
+    let mut conn =
+        client::connect_addr(&client_id, "srv", &addr.to_string(), Some(id.fingerprint()))
+            .await
+            .unwrap();
+    let outcome = async {
+        conn.send_request(&Request::Exec {
+            command: "true".into(),
+            args: Vec::new(),
+            shell: None,
+            cwd: None,
+            timeout_secs: None,
+        })
+        .await?;
+        conn.recv_response().await
+    }
+    .await;
+    let err = outcome.expect_err("a closed connection cannot answer");
+    assert!(matches!(err, RenfieldError::NotAuthorized(_)), "{err:?}");
+}
