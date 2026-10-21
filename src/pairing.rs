@@ -163,10 +163,16 @@ where
         return refuse(stream, "pairing in progress, try again later").await;
     }
     let _slot = Slot(ctx.policy);
-    let headline = format!(
+    let mut headline = format!(
         "Pairing request from '{}' at {}.",
         offer.source_name, ctx.peer_addr
     );
+    if offer.both {
+        headline.push_str(&format!(
+            "\n  --both: this machine will also be able to command '{}'.",
+            offer.source_name
+        ));
+    }
     let text = prompt_text(
         &headline,
         ctx.own_fingerprint,
@@ -276,7 +282,13 @@ pub async fn source_flow(p: PairParams, prompt: Arc<dyn Prompt>) -> Result<(), R
         Response::PairOffered { .. } => {}
         other => return Err(unexpected(&p.name, other)),
     }
-    let headline = format!("Pairing with '{}' at {}.", p.name, p.addr);
+    let mut headline = format!("Pairing with '{}' at {}.", p.name, p.addr);
+    if p.both {
+        headline.push_str(&format!(
+            "\n  --both: '{}' will also be able to command this machine.",
+            p.name
+        ));
+    }
     let text = prompt_text(
         &headline,
         &id.fingerprint(),

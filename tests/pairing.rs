@@ -402,3 +402,37 @@ async fn unknown_key_cannot_exec_while_the_pairing_window_is_open() {
     assert!(matches!(err, RenfieldError::NotAuthorized(_)), "{err:?}");
     assert_eq!(err.exit_code(), 202);
 }
+
+#[tokio::test]
+async fn prompts_say_when_both_directions_are_granted() {
+    let dest_prompt = Script::new(&[true, true]);
+    let dest = start_dest(Some(dest_prompt.clone()), true).await;
+    let (src_dir, _) = new_source();
+    let src_prompt = Script::new(&[true]);
+    let mut p = params(src_dir.path(), dest.addr);
+    p.both = true;
+    p.listen_port = Some(4242);
+    source_flow(p, src_prompt.clone()).await.unwrap();
+    let on_dest = &dest_prompt.asked()[0];
+    assert!(
+        on_dest.contains("--both") && on_dest.contains("will also be able to command 'laptop'"),
+        "{on_dest}"
+    );
+    let on_source = &src_prompt.asked()[0];
+    assert!(
+        on_source.contains("--both")
+            && on_source.contains("'win' will also be able to command this machine"),
+        "{on_source}"
+    );
+
+    // A plain pairing mentions nothing of the kind.
+    let dest2_prompt = Script::new(&[true]);
+    let dest2 = start_dest(Some(dest2_prompt.clone()), true).await;
+    let (src2_dir, _) = new_source();
+    let src2_prompt = Script::new(&[true]);
+    source_flow(params(src2_dir.path(), dest2.addr), src2_prompt.clone())
+        .await
+        .unwrap();
+    assert!(!dest2_prompt.asked()[0].contains("--both"));
+    assert!(!src2_prompt.asked()[0].contains("--both"));
+}
