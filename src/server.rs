@@ -217,8 +217,7 @@ where
                     &operation.unwrap_or_default(),
                     "refused: key not authorized",
                 );
-                let message = "this key is not authorized on this machine".to_string();
-                return proto::send(stream, &Response::Error { message }).await;
+                return proto::send(stream, &Response::NotAuthorized).await;
             }
             Request::Exec {
                 command,

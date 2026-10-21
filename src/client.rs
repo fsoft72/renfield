@@ -130,6 +130,9 @@ impl Conn {
             .await
             .map_err(|e| self.io(e))?;
         self.answered |= response.is_some();
+        if matches!(response, Some(Response::NotAuthorized)) {
+            return Err(RenfieldError::NotAuthorized(self.machine.clone()));
+        }
         response.ok_or_else(|| {
             RenfieldError::Io(format!(
                 "'{}' closed the connection unexpectedly",

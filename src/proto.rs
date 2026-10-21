@@ -219,6 +219,8 @@ pub enum Response {
     PairOffered { dest_name: String },
     /// The pairing was stored on dest.
     PairDone,
+    /// The peer's key is not authorized on this machine (it may complete the handshake during pairing).
+    NotAuthorized,
     /// The request failed; the message explains why.
     Error { message: String },
 }

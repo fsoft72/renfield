@@ -381,3 +381,24 @@ fn clean_name_keeps_safe_names_and_neutralises_the_rest() {
     assert!(!is_valid_name(""));
     assert!(!is_valid_name(&"x".repeat(65)));
 }
+
+#[tokio::test]
+async fn unknown_key_cannot_exec_while_the_pairing_window_is_open() {
+    let dest = start_dest(Some(Script::new(&[true])), true).await;
+    let (_dir, id) = new_source();
+    let mut conn = client::connect_addr(
+        &id,
+        "win",
+        &dest.addr.to_string(),
+        Some(dest.id.fingerprint()),
+    )
+    .await
+    .unwrap();
+    let args = ExecArgs {
+        command: "true".into(),
+        ..ExecArgs::default()
+    };
+    let err = conn.exec(args, |_, _| {}).await.unwrap_err();
+    assert!(matches!(err, RenfieldError::NotAuthorized(_)), "{err:?}");
+    assert_eq!(err.exit_code(), 202);
+}
