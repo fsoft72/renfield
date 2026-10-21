@@ -21,3 +21,4 @@
 - The MCP server ignores JSON-RPC responses sent by the client instead of answering them with an error.
 - MCP: the timeout message reports the limit dest actually applied (its own maximum may be lower than the requested one), and the remote_edit description explains how mixed line endings are matched.
 - The pairing prompts on both machines say explicitly when `--both` lets the other machine command this one.
+- The name a machine gives itself in pairings now comes from the OS host name (gethostname on unix, COMPUTERNAME on Windows), so macOS no longer falls back to a fixed name.

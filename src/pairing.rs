@@ -78,13 +78,30 @@ pub fn clean_name(name: &str) -> String {
     }
 }
 
+/// The host name reported by the operating system, if any.
+#[cfg(unix)]
+pub fn os_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for `buf.len()` bytes and gethostname never writes more.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The host name reported by the operating system, if any.
+#[cfg(not(unix))]
+pub fn os_hostname() -> Option<String> {
+    let name = std::env::var("COMPUTERNAME").ok()?.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 /// Returns the name this machine gives itself in pairings (its host name, made safe).
 pub fn local_name() -> String {
-    let from_env = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME"));
-    let name = from_env
-        .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok());
-    clean_name(name.as_deref().map(str::trim).unwrap_or_default())
+    clean_name(&os_hostname().unwrap_or_default())
 }
 
 /// Builds the question shown on both machines: the same two keys, with the labels swapped.

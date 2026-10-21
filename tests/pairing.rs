@@ -436,3 +436,20 @@ async fn prompts_say_when_both_directions_are_granted() {
     assert!(!dest2_prompt.asked()[0].contains("--both"));
     assert!(!src2_prompt.asked()[0].contains("--both"));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn os_hostname_matches_the_kernel_hostname() {
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap();
+    assert_eq!(
+        renfield::pairing::os_hostname().as_deref(),
+        Some(kernel.trim())
+    );
+}
+
+#[test]
+fn local_name_is_always_a_valid_pairing_name() {
+    assert!(renfield::pairing::is_valid_name(
+        &renfield::pairing::local_name()
+    ));
+}
