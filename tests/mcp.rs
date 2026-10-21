@@ -324,3 +324,21 @@ async fn stdio_framing_initialize_notification_and_garbage() {
     client_write.shutdown().await.unwrap();
     handle.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn responses_from_the_client_are_ignored_but_garbage_is_not() {
+    let env = common::start().await;
+    let server = server_for(&env);
+    let result = json!({"jsonrpc": "2.0", "id": 9, "result": {}});
+    assert!(
+        server.handle(result).await.is_none(),
+        "a client response must not be answered"
+    );
+    let error = json!({"jsonrpc": "2.0", "id": 9, "error": {"code": -1, "message": "no"}});
+    assert!(server.handle(error).await.is_none());
+    let neither = server
+        .handle(json!({"jsonrpc": "2.0", "id": 10}))
+        .await
+        .unwrap();
+    assert_eq!(neither["error"]["code"], -32600);
+}

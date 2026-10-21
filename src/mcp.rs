@@ -194,6 +194,10 @@ impl Server {
     pub async fn handle(&self, msg: Value) -> Option<Value> {
         let id = msg.get("id").cloned();
         let Some(method) = msg.get("method").and_then(Value::as_str) else {
+            // A JSON-RPC response sent by the client is not a request: nothing to answer.
+            if msg.get("result").is_some() || msg.get("error").is_some() {
+                return None;
+            }
             return id.map(|id| error_response(id, INVALID_REQUEST, "missing method"));
         };
         let id = id?;
