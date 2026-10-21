@@ -132,8 +132,12 @@ pub async fn exec(
     command: Vec<String>,
 ) -> Result<i32, RenfieldError> {
     let mut conn = client::connect(dir, name).await?;
+    // One argument is a command line for the remote shell; several are a program and its arguments.
+    let mut words = command.into_iter();
+    let first = words.next().unwrap_or_default();
     let args = ExecArgs {
-        command: command.join(" "),
+        command: first,
+        args: words.collect(),
         shell,
         cwd,
         timeout_secs: timeout,

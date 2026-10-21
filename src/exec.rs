@@ -39,6 +39,46 @@ pub struct ExecResult {
     pub timed_out: bool,
 }
 
+/// Tells whether a character can appear unquoted in an argument for this shell.
+fn is_bare(shell: ShellKind, c: char) -> bool {
+    let posix = matches!(shell, ShellKind::Bash | ShellKind::Sh);
+    c.is_ascii_alphanumeric()
+        || matches!(c, '_' | '.' | '-' | ':' | '/')
+        || (posix && matches!(c, '%' | '+' | '=' | '@' | ','))
+        || (!posix && c == '\\')
+}
+
+/// Quotes one argument so that `shell` passes it on unchanged (a literal `%` stays unsafe in cmd).
+fn quote_arg(shell: ShellKind, arg: &str) -> String {
+    if !arg.is_empty() && arg.chars().all(|c| is_bare(shell, c)) {
+        return arg.to_string();
+    }
+    match shell {
+        ShellKind::Bash | ShellKind::Sh => format!("'{}'", arg.replace('\'', "'\\''")),
+        ShellKind::Powershell | ShellKind::Pwsh => format!("'{}'", arg.replace('\'', "''")),
+        ShellKind::Cmd => format!("\"{}\"", arg.replace('"', "\\\"")),
+    }
+}
+
+/// Builds the command line to run: `command` as is when there are no `args`, otherwise the program
+/// and every argument quoted for `shell`, so spaces, quotes and metacharacters survive.
+pub fn compose(shell: ShellKind, command: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        return command.to_string();
+    }
+    let program = quote_arg(shell, command);
+    let program = if matches!(shell, ShellKind::Powershell | ShellKind::Pwsh) {
+        format!("& {program}")
+    } else {
+        program
+    };
+    let quoted = args.iter().map(|a| quote_arg(shell, a));
+    std::iter::once(program)
+        .chain(quoted)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Returns the program and arguments that run `command` with `shell`.
 pub fn command_line(shell: ShellKind, command: &str) -> (&'static str, Vec<String>) {
     match shell {
@@ -208,4 +248,63 @@ pub async fn run(spec: ExecSpec, tx: mpsc::Sender<(Stream, Vec<u8>)>) -> Result<
         exit_code: status.and_then(exit_code_of),
         timed_out,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn without_arguments_the_command_line_is_used_as_is() {
+        assert_eq!(
+            compose(ShellKind::Bash, "echo a; ls | wc -l", &[]),
+            "echo a; ls | wc -l"
+        );
+        assert_eq!(compose(ShellKind::Cmd, "dir & ver", &[]), "dir & ver");
+    }
+
+    #[test]
+    fn posix_shells_single_quote_unsafe_arguments() {
+        let line = compose(
+            ShellKind::Bash,
+            "printf",
+            &args(&["%s|", "a  b", "it's", "plain-1.txt", "$HOME", ""]),
+        );
+        assert_eq!(
+            line,
+            "printf '%s|' 'a  b' 'it'\\''s' plain-1.txt '$HOME' ''"
+        );
+        assert_eq!(
+            compose(ShellKind::Sh, "my prog", &args(&["x"])),
+            "'my prog' x"
+        );
+    }
+
+    #[test]
+    fn powershell_uses_call_operator_and_doubles_single_quotes() {
+        let line = compose(
+            ShellKind::Powershell,
+            "git",
+            &args(&["commit", "-m", "it's here", "C:\\my dir\\f.txt"]),
+        );
+        assert_eq!(line, "& git commit -m 'it''s here' 'C:\\my dir\\f.txt'");
+        assert_eq!(
+            compose(ShellKind::Pwsh, "C:\\tools\\a.exe", &args(&["b c"])),
+            "& C:\\tools\\a.exe 'b c'"
+        );
+    }
+
+    #[test]
+    fn cmd_double_quotes_unsafe_arguments_and_escapes_inner_quotes() {
+        let line = compose(
+            ShellKind::Cmd,
+            "dir",
+            &args(&["C:\\my dir", "/b", "say \"hi\"", "a&b"]),
+        );
+        assert_eq!(line, "dir \"C:\\my dir\" /b \"say \\\"hi\\\"\" \"a&b\"");
+    }
 }

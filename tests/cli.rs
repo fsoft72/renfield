@@ -136,3 +136,15 @@ async fn authorized_revoke_blocks_next_connection() {
         "revoking something unknown is a usage error: {err}"
     );
 }
+
+#[tokio::test]
+async fn exec_with_separate_arguments_keeps_their_boundaries() {
+    let env = common::start().await;
+    let (code, out, err) = run(
+        env.client_dir.path(),
+        &["exec", "srv", "--", "printf", "[%s]", "a  b", "it's", "c;d"],
+    )
+    .await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "[a  b][it's][c;d]");
+}

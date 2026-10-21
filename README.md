@@ -97,6 +97,8 @@ Remote paths use the native format of the remote machine (`C:\Users\me\x`, `/hom
 | `renfield authorized list` / `renfield authorized revoke <label-or-fingerprint>` | Show or revoke who may command this machine. |
 | `renfield mcp` | MCP server on stdio. |
 
+`exec` takes either one argument, which is a command line for the remote shell (`exec win-pc -- "dir C:\\a & ver"`), or several: the first is the program and each of the others is passed to it unchanged, with spaces, quotes and special characters protected for the remote shell (`exec linux-box -- grep -n "hello world" notes.txt`). In `cmd` a literal `%` cannot be protected.
+
 Shells (`--shell`): `bash`, `sh`, `powershell` (Windows PowerShell 5.1), `pwsh` (PowerShell 7, if installed), `cmd`. Default: `bash` (else `sh`) on Linux, Windows PowerShell on Windows.
 
 ## Security model

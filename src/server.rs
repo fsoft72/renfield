@@ -222,20 +222,19 @@ where
             }
             Request::Exec {
                 command,
+                args,
                 shell,
                 cwd,
                 timeout_secs,
             } => {
-                handle_exec(
-                    stream,
-                    &shared.opts,
+                let job = ExecJob {
                     command,
+                    args,
                     shell,
                     cwd,
                     timeout_secs,
-                    &mut summary,
-                )
-                .await?;
+                };
+                handle_exec(stream, &shared.opts, job, &mut summary).await?;
             }
             Request::ReadFile { .. }
             | Request::WriteFile { .. }
@@ -294,7 +293,13 @@ fn peer_label(policy: &FilePolicy, fingerprint: &str) -> String {
 /// Describes a request for the audit log (nothing for the pairing messages, which log themselves).
 fn describe(request: &Request) -> Option<String> {
     Some(match request {
-        Request::Exec { command, .. } => format!("exec '{}'", audit_text(command)),
+        Request::Exec { command, args, .. } => {
+            let line = std::iter::once(command.as_str())
+                .chain(args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("exec '{}'", audit_text(&line))
+        }
         Request::ReadFile { path, .. } => format!("read {}", audit_text(path)),
         Request::WriteFile { path, .. } => format!("write {}", audit_text(path)),
         Request::EditFile { path, .. } => format!("edit {}", audit_text(path)),
@@ -450,19 +455,32 @@ where
     }
 }
 
+/// An exec request as received from the source.
+struct ExecJob {
+    command: String,
+    args: Vec<String>,
+    shell: Option<ShellKind>,
+    cwd: Option<String>,
+    timeout_secs: Option<u64>,
+}
+
 /// Runs a command and streams its output back, ending with `ExecDone` or `Error`.
 async fn handle_exec<S>(
     stream: &mut S,
     opts: &ServerOptions,
-    command: String,
-    shell: Option<ShellKind>,
-    cwd: Option<String>,
-    timeout_secs: Option<u64>,
+    job: ExecJob,
     summary: &mut String,
 ) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let ExecJob {
+        command,
+        args,
+        shell,
+        cwd,
+        timeout_secs,
+    } = job;
     let cwd = home::expand(
         cwd.as_deref()
             .or(opts.default_cwd.as_deref())
@@ -472,9 +490,10 @@ where
         (Some(t), Some(max)) => Some(t.min(max)),
         (t, max) => t.or(max),
     };
+    let shell = shell.unwrap_or_else(ShellKind::default_for_os);
     let spec = ExecSpec {
-        command,
-        shell: shell.unwrap_or_else(ShellKind::default_for_os),
+        command: exec::compose(shell, &command, &args),
+        shell,
         cwd,
         timeout: limit.map(Duration::from_secs),
     };

@@ -126,3 +126,18 @@ async fn exec_bad_cwd_reports_clear_error() {
     let err = conn.exec(args, |_, _| {}).await.unwrap_err().to_string();
     assert!(err.contains("/definitely/not/here"), "{err}");
 }
+
+#[tokio::test]
+async fn exec_args_keep_spaces_quotes_and_metacharacters() {
+    let env = common::start().await;
+    let args = ExecArgs {
+        command: "printf".into(),
+        args: ["%s\n", "x;y", "$HOME", "a  b", "it's"]
+            .map(String::from)
+            .to_vec(),
+        ..ExecArgs::default()
+    };
+    let (o, out, _) = run(&env, args).await;
+    assert_eq!(o.exit_code, Some(0));
+    assert_eq!(String::from_utf8_lossy(&out), "x;y\n$HOME\na  b\nit's\n");
+}

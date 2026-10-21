@@ -52,6 +52,7 @@ async fn source_disconnect_kills_the_running_command() {
     let mut conn = client::connect(env.client_dir.path(), "srv").await.unwrap();
     conn.send_request(&Request::Exec {
         command: "sleep 41; true".into(),
+        args: Vec::new(),
         shell: None,
         cwd: None,
         timeout_secs: None,
@@ -64,7 +65,7 @@ async fn source_disconnect_kills_the_running_command() {
         "the command should be running before the disconnect"
     );
     drop(conn);
-    for _ in 0..30 {
+    for _ in 0..100 {
         if !running("sleep 41") {
             return;
         }

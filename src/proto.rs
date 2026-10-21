@@ -150,6 +150,9 @@ pub enum Request {
     /// Run a command; output comes back as `ExecOutput` messages, each followed by a data frame.
     Exec {
         command: String,
+        /// Extra arguments: when present, `command` is the program and each argument is quoted for the shell.
+        #[serde(default)]
+        args: Vec<String>,
         shell: Option<ShellKind>,
         cwd: Option<String>,
         timeout_secs: Option<u64>,

@@ -249,6 +249,7 @@ impl Server {
         );
         let exec = ExecArgs {
             command: a.command,
+            args: Vec::new(),
             shell: a.shell,
             cwd: a.cwd,
             timeout_secs: Some(timeout),

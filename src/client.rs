@@ -28,7 +28,10 @@ pub struct Conn {
 /// What to run remotely.
 #[derive(Debug, Clone, Default)]
 pub struct ExecArgs {
+    /// The command line, or the program when `args` is not empty.
     pub command: String,
+    /// Arguments passed to the program as they are (quoted for the remote shell).
+    pub args: Vec<String>,
     pub shell: Option<ShellKind>,
     pub cwd: Option<String>,
     pub timeout_secs: Option<u64>,
@@ -310,6 +313,7 @@ impl Conn {
     ) -> Result<ExecOutcome, RenfieldError> {
         let request = Request::Exec {
             command: args.command,
+            args: args.args,
             shell: args.shell,
             cwd: args.cwd,
             timeout_secs: args.timeout_secs,
