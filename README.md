@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/renfield-logo.webp" alt="renfield logo" width="600">
+</p>
+
 # renfield
 
 Run commands, edit files and copy files on another machine over a secure connection, with no `sshd` and nothing to install except one small executable.
@@ -19,6 +23,10 @@ Run commands, edit files and copy files on another machine over a secure connect
 Any machine can be source or dest (Linux and Windows are supported; the code does not prevent macOS). The main user is **Claude Code**: `renfield mcp` is an MCP server that gives Claude tools to run commands, read, write and edit text files and copy files on the other machine, almost as if it were local. The command line is there for manual use and scripts.
 
 renfield is **non interactive**: no terminal, no input for the commands you run, so no `vim`, `top` or password prompts on the other side.
+
+<p align="center">
+  <img src="assets/renfield-image.webp" alt="renfield" width="700">
+</p>
 
 ## Contents
 
