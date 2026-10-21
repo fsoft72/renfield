@@ -29,6 +29,19 @@ pub fn dir_from(override_dir: Option<OsString>) -> Result<PathBuf> {
     Ok(base.join(APP_DIR))
 }
 
+/// Expands a user supplied path: `~` is the home directory and relative paths start from it.
+pub fn expand(path: &str) -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    if path == "~" {
+        return home;
+    }
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        return home.join(rest);
+    }
+    let p = PathBuf::from(path);
+    if p.is_absolute() { p } else { home.join(p) }
+}
+
 /// Restricts a file so that only its owner can read and write it (no-op on non unix systems).
 pub fn restrict_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
@@ -68,5 +81,15 @@ mod tests {
         restrict_permissions(&f).unwrap();
         let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn expand_tilde_relative_and_absolute() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(expand("~"), home);
+        assert_eq!(expand("~/proj"), home.join("proj"));
+        assert_eq!(expand("proj/src"), home.join("proj/src"));
+        let abs = std::env::temp_dir();
+        assert_eq!(expand(abs.to_str().unwrap()), abs);
     }
 }

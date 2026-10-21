@@ -2,7 +2,7 @@
 
 use std::io::{Error, ErrorKind, Result};
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Protocol version spoken by this build.
@@ -92,4 +92,73 @@ pub async fn recv<R: AsyncRead + Unpin, T: DeserializeOwned>(r: &mut R) -> Resul
             "unexpected data frame, expected a message",
         )),
     }
+}
+
+/// Which shell runs a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ShellKind {
+    Bash,
+    Sh,
+    Powershell,
+    Pwsh,
+    Cmd,
+}
+
+impl ShellKind {
+    /// The shell used when the caller does not choose one: PowerShell on Windows, bash (else sh) elsewhere.
+    pub fn default_for_os() -> ShellKind {
+        if cfg!(windows) {
+            return ShellKind::Powershell;
+        }
+        if on_path("bash") {
+            ShellKind::Bash
+        } else {
+            ShellKind::Sh
+        }
+    }
+}
+
+/// Tells whether an executable with this name exists in a PATH directory.
+fn on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+}
+
+/// Which output stream a chunk belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stream {
+    Stdout,
+    Stderr,
+}
+
+/// A request from source to dest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Request {
+    /// Run a command; output comes back as `ExecOutput` messages, each followed by a data frame.
+    Exec {
+        command: String,
+        shell: Option<ShellKind>,
+        cwd: Option<String>,
+        timeout_secs: Option<u64>,
+    },
+}
+
+/// An answer from dest to source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Response {
+    /// Announces that the next frame is a chunk of output of this stream.
+    ExecOutput { stream: Stream },
+    /// The command ended (or was killed because of the timeout).
+    ExecDone {
+        exit_code: Option<i32>,
+        timed_out: bool,
+    },
+    /// The request failed; the message explains why.
+    Error { message: String },
 }

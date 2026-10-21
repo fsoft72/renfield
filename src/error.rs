@@ -46,6 +46,8 @@ pub enum RenfieldError {
     Usage(String),
     #[error("I/O error: {0}")]
     Io(String),
+    #[error("{0}")]
+    Remote(String),
 }
 
 impl RenfieldError {
@@ -59,7 +61,7 @@ impl RenfieldError {
             RenfieldError::Timeout(_) => EXIT_TIMEOUT,
             RenfieldError::Protocol(_) => EXIT_PROTOCOL,
             RenfieldError::Usage(_) => EXIT_USAGE,
-            RenfieldError::Io(_) => EXIT_IO,
+            RenfieldError::Io(_) | RenfieldError::Remote(_) => EXIT_IO,
         }
     }
 }
