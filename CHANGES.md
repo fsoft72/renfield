@@ -13,3 +13,4 @@
 - Added `list`, `remove`, `authorized list|revoke`, the reserved exit codes (200-207) verified end to end on the real binary, and an audit line on dest for every request (time, peer label, operation, result).
 - Release profile (fat LTO, stripped), static musl Linux build and Windows exe verified (system DLLs only, exercised under Wine), README with quick start, security model, exit codes and limits.
 - Hardening after the final review: pairing names are validated (no forged prompts), silent peers are dropped (handshake and first request timeouts), frame bodies are read incrementally, a vanished source kills its running command tree, kills are bounded on Windows, children run with a hidden console on Windows, and writes go through symlinks.
+- Fixed a panic in `remote_read` when `limit` (or `offset`) was huge: the line range now uses a saturating sum.

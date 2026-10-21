@@ -85,7 +85,7 @@ pub fn read_text(path: &str, offset: Option<usize>, limit: Option<usize>) -> Res
     let total_lines = lines.len();
     let first_line = offset.unwrap_or(1).max(1);
     let start = (first_line - 1).min(total_lines);
-    let end = limit.map_or(total_lines, |l| (start + l).min(total_lines));
+    let end = limit.map_or(total_lines, |l| start.saturating_add(l).min(total_lines));
     let mut out = String::new();
     let mut truncated = false;
     for (i, line) in lines[start..end].iter().enumerate() {
@@ -412,5 +412,17 @@ mod tests {
                 .is_symlink()
         );
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "gamma\n");
+    }
+
+    #[test]
+    fn read_with_huge_limit_or_offset_does_not_overflow() {
+        let d = tmp();
+        let f = p(&d, "l.txt");
+        std::fs::write(&f, "l1\nl2\nl3\n").unwrap();
+        let rest = read_text(&f, Some(2), Some(usize::MAX)).unwrap();
+        assert_eq!(rest.text, "l2\nl3");
+        let past = read_text(&f, Some(usize::MAX), Some(usize::MAX)).unwrap();
+        assert_eq!(past.text, "");
+        assert_eq!(past.total_lines, 3);
     }
 }
