@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
           cargo build --release --target x86_64-unknown-linux-musl
-          file target/x86_64-unknown-linux-musl/release/renfield | grep -q "statically linked"
+          file target/x86_64-unknown-linux-musl/release/renfield | grep -Eq "statically linked|static-pie linked"
       - uses: actions/upload-artifact@v4
         with:
           name: renfield-linux
