@@ -8,6 +8,7 @@ pub mod error;
 pub mod exec;
 pub mod home;
 pub mod identity;
+pub mod pairing;
 pub mod proto;
 pub mod server;
 pub mod store;

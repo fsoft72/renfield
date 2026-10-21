@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::net::TcpListener;
 
@@ -11,13 +12,45 @@ use crate::client::{self, ExecArgs};
 use crate::config::{Config, resolve_port};
 use crate::error::RenfieldError;
 use crate::identity::Identity;
+use crate::pairing::{PairParams, TerminalPrompt, local_name, source_flow};
 use crate::proto::{ShellKind, Stream};
 use crate::server::{self, FilePolicy, ServerOptions};
 
 /// Runs a parsed subcommand and returns the process exit code.
 pub async fn dispatch(dir: &Path, command: Command) -> Result<i32, RenfieldError> {
     match command {
-        Command::Listen { port, config } => listen(dir, port, config).await.map(|_| 0),
+        Command::Listen {
+            port,
+            config,
+            accept_key,
+            timeout,
+        } => {
+            let window = accept_key.then(|| Duration::from_secs(timeout));
+            listen(dir, port, config, window).await.map(|_| 0)
+        }
+        Command::Pair {
+            name,
+            addr,
+            both,
+            listen_port,
+            force,
+        } => {
+            let params = PairParams {
+                dir: dir.to_path_buf(),
+                name,
+                addr,
+                own_name: local_name(),
+                both,
+                listen_port,
+                force,
+            };
+            source_flow(params, Arc::new(TerminalPrompt))
+                .await
+                .map(|_| {
+                    println!("Paired. Try: renfield exec <name> -- hostname");
+                    0
+                })
+        }
         Command::Exec {
             name,
             shell,
@@ -33,6 +66,7 @@ pub async fn listen(
     dir: &Path,
     port: Option<u16>,
     config: Option<PathBuf>,
+    pairing_window: Option<Duration>,
 ) -> Result<(), RenfieldError> {
     let io = |e: anyhow::Error| RenfieldError::Io(format!("{e:#}"));
     let cfg = match &config {
@@ -49,11 +83,20 @@ pub async fn listen(
         "renfield listening on port {port}, key fingerprint {}",
         id.fingerprint()
     );
-    let opts = ServerOptions {
+    let policy = Arc::new(FilePolicy::new(dir));
+    let mut opts = ServerOptions {
         default_cwd: cfg.default_cwd,
         max_timeout_secs: cfg.max_timeout_secs,
+        prompt: None,
     };
-    let policy = Arc::new(FilePolicy::new(dir));
+    if let Some(window) = pairing_window {
+        opts.prompt = Some(Arc::new(TerminalPrompt));
+        policy.open_pairing_for(window);
+        println!(
+            "Pairing mode: accepting a new key for the next {} seconds.",
+            window.as_secs()
+        );
+    }
     server::serve(listener, id, policy, opts).await.map_err(io)
 }
 

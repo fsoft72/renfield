@@ -96,6 +96,26 @@ impl Conn {
         tls::map_io_error(&self.machine, &e)
     }
 
+    /// Sends one request.
+    pub async fn send_request(&mut self, request: &Request) -> Result<(), RenfieldError> {
+        proto::send(&mut self.stream, request)
+            .await
+            .map_err(|e| self.io(e))
+    }
+
+    /// Receives one response; a closed connection is an error.
+    pub async fn recv_response(&mut self) -> Result<Response, RenfieldError> {
+        let response = proto::recv::<_, Response>(&mut self.stream)
+            .await
+            .map_err(|e| self.io(e))?;
+        response.ok_or_else(|| {
+            RenfieldError::Io(format!(
+                "'{}' closed the connection unexpectedly",
+                self.machine
+            ))
+        })
+    }
+
     /// Runs a command remotely, calling `on_output` for every chunk as it arrives.
     pub async fn exec<F: FnMut(Stream, &[u8])>(
         &mut self,
@@ -108,44 +128,40 @@ impl Conn {
             cwd: args.cwd,
             timeout_secs: args.timeout_secs,
         };
-        proto::send(&mut self.stream, &request)
-            .await
-            .map_err(|e| self.io(e))?;
+        self.send_request(&request).await?;
         loop {
-            let response = proto::recv::<_, Response>(&mut self.stream)
-                .await
-                .map_err(|e| self.io(e))?;
-            match response {
-                Some(Response::ExecOutput { stream }) => match proto::read_frame(&mut self.stream)
-                    .await
-                    .map_err(|e| self.io(e))?
-                {
-                    Some(Frame::Data(bytes)) => on_output(stream, &bytes),
-                    _ => {
-                        return Err(RenfieldError::Protocol(
-                            "expected output data after an output header".into(),
-                        ));
+            match self.recv_response().await? {
+                Response::ExecOutput { stream } => {
+                    match proto::read_frame(&mut self.stream)
+                        .await
+                        .map_err(|e| self.io(e))?
+                    {
+                        Some(Frame::Data(bytes)) => on_output(stream, &bytes),
+                        _ => {
+                            return Err(RenfieldError::Protocol(
+                                "expected output data after an output header".into(),
+                            ));
+                        }
                     }
-                },
-                Some(Response::ExecDone {
+                }
+                Response::ExecDone {
                     exit_code,
                     timed_out,
-                }) => {
+                } => {
                     return Ok(ExecOutcome {
                         exit_code,
                         timed_out,
                     });
                 }
-                Some(Response::Error { message }) => {
+                Response::Error { message } => {
                     return Err(RenfieldError::Remote(format!(
                         "'{}' reported: {message}",
                         self.machine
                     )));
                 }
-                None => {
-                    return Err(RenfieldError::Io(format!(
-                        "'{}' closed the connection before the command finished",
-                        self.machine
+                other => {
+                    return Err(RenfieldError::Protocol(format!(
+                        "unexpected answer to a command: {other:?}"
                     )));
                 }
             }

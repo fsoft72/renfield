@@ -146,6 +146,16 @@ pub enum Request {
         cwd: Option<String>,
         timeout_secs: Option<u64>,
     },
+    /// Offer this machine's key for pairing; `both` also asks dest to be able to command source.
+    PairOffer {
+        source_name: String,
+        both: bool,
+        source_listen_port: Option<u16>,
+    },
+    /// Source confirms the pairing after seeing dest's key.
+    PairCommit,
+    /// Source declines the pairing after seeing dest's key.
+    PairAbort,
 }
 
 /// An answer from dest to source.
@@ -159,6 +169,10 @@ pub enum Response {
         exit_code: Option<i32>,
         timed_out: bool,
     },
+    /// Dest accepted the offered key and waits for the source to commit or abort.
+    PairOffered { dest_name: String },
+    /// The pairing was stored on dest.
+    PairDone,
     /// The request failed; the message explains why.
     Error { message: String },
 }

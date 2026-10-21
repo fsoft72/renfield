@@ -1,5 +1,6 @@
 //! The dest side: accepts TLS connections and serves requests from authorized sources.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,23 +15,27 @@ use tokio_rustls::TlsAcceptor;
 use crate::exec::{self, ExecSpec};
 use crate::home;
 use crate::identity::Identity;
+use crate::pairing::{self, DestContext, Offer, Prompt};
 use crate::proto::{self, Frame, Request, Response, ShellKind, Stream};
 use crate::store::Authorized;
 use crate::tls::{self, PeerPolicy};
 
 /// Settings of a running dest.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ServerOptions {
     /// Working directory of commands when the caller gives none.
     pub default_cwd: Option<String>,
     /// Hard upper bound, in seconds, for any command.
     pub max_timeout_secs: Option<u64>,
+    /// Asks the human to accept a key; when absent this dest never pairs.
+    pub prompt: Option<Arc<dyn Prompt>>,
 }
 
 /// Authorization policy backed by `authorized.toml`, re-read on every check so changes apply at once.
 pub struct FilePolicy {
     dir: PathBuf,
     pairing: AtomicBool,
+    busy: AtomicBool,
 }
 
 impl FilePolicy {
@@ -39,12 +44,47 @@ impl FilePolicy {
         FilePolicy {
             dir: dir.to_path_buf(),
             pairing: AtomicBool::new(false),
+            busy: AtomicBool::new(false),
         }
+    }
+
+    /// The configuration directory this policy reads and writes.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// Opens or closes the pairing window (unknown peers may connect while it is open).
     pub fn set_pairing(&self, open: bool) {
         self.pairing.store(open, Ordering::SeqCst);
+    }
+
+    /// Opens the pairing window and closes it again after `window`.
+    pub fn open_pairing_for(self: &Arc<Self>, window: Duration) {
+        self.set_pairing(true);
+        let policy = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(window).await;
+            if policy.pairing_open() {
+                policy.set_pairing(false);
+                println!("pairing window closed");
+            }
+        });
+    }
+
+    /// Claims the single pairing slot; false when the window is closed or another pairing is running.
+    pub fn try_begin_pairing(&self) -> bool {
+        if !self.pairing_open() {
+            return false;
+        }
+        self.busy
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Ends the running pairing and closes the window: one attempt per window.
+    pub fn finish_pairing(&self) {
+        self.set_pairing(false);
+        self.busy.store(false, Ordering::SeqCst);
     }
 }
 
@@ -60,6 +100,13 @@ impl PeerPolicy for FilePolicy {
     }
 }
 
+/// Everything a connection handler needs to know about the server.
+struct Shared {
+    own_fingerprint: String,
+    policy: Arc<FilePolicy>,
+    opts: ServerOptions,
+}
+
 /// Accepts connections forever, serving each one on its own task.
 pub async fn serve(
     listener: TcpListener,
@@ -69,10 +116,14 @@ pub async fn serve(
 ) -> Result<()> {
     let config = tls::server_config(&id, policy.clone())?;
     let acceptor = TlsAcceptor::from(config);
-    let opts = Arc::new(opts);
+    let shared = Arc::new(Shared {
+        own_fingerprint: id.fingerprint(),
+        policy,
+        opts,
+    });
     loop {
         let (tcp, peer) = listener.accept().await?;
-        let (acceptor, policy, opts) = (acceptor.clone(), policy.clone(), opts.clone());
+        let (acceptor, shared) = (acceptor.clone(), shared.clone());
         tokio::spawn(async move {
             let mut stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -82,7 +133,9 @@ pub async fn serve(
                 }
             };
             let fingerprint = tls::peer_fingerprint(stream.get_ref().1).unwrap_or_default();
-            if let Err(e) = handle_connection(&mut stream, &fingerprint, &policy, &opts).await {
+            if let Err(e) = handle_connection(&mut stream, &fingerprint, peer, &shared).await
+                && !is_normal_close(&e)
+            {
                 eprintln!("connection from {peer} ended with error: {e}");
             }
         });
@@ -93,25 +146,52 @@ pub async fn serve(
 async fn handle_connection<S>(
     stream: &mut S,
     fingerprint: &str,
-    policy: &FilePolicy,
-    opts: &ServerOptions,
+    peer: SocketAddr,
+    shared: &Shared,
 ) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     while let Some(request) = proto::recv::<_, Request>(stream).await? {
-        if !policy.is_authorized(fingerprint) {
-            let message = "this key is not authorized on this machine".to_string();
-            return proto::send(stream, &Response::Error { message }).await;
-        }
         match request {
+            Request::PairOffer {
+                source_name,
+                both,
+                source_listen_port,
+            } => {
+                let ctx = DestContext {
+                    policy: &shared.policy,
+                    own_fingerprint: &shared.own_fingerprint,
+                    peer_fingerprint: fingerprint,
+                    peer_addr: peer,
+                    prompt: shared.opts.prompt.clone(),
+                };
+                return pairing::dest_handle_offer(
+                    stream,
+                    &ctx,
+                    Offer {
+                        source_name,
+                        both,
+                        source_listen_port,
+                    },
+                )
+                .await;
+            }
+            _ if !shared.policy.is_authorized(fingerprint) => {
+                let message = "this key is not authorized on this machine".to_string();
+                return proto::send(stream, &Response::Error { message }).await;
+            }
             Request::Exec {
                 command,
                 shell,
                 cwd,
                 timeout_secs,
             } => {
-                handle_exec(stream, opts, command, shell, cwd, timeout_secs).await?;
+                handle_exec(stream, &shared.opts, command, shell, cwd, timeout_secs).await?;
+            }
+            Request::PairCommit | Request::PairAbort => {
+                let message = "unexpected pairing message, no pairing is in progress".to_string();
+                return proto::send(stream, &Response::Error { message }).await;
             }
         }
     }
@@ -181,5 +261,32 @@ where
             )
             .await
         }
+    }
+}
+
+/// Tells whether a connection error is just the peer hanging up (not worth logging).
+fn is_normal_close(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_hangup_is_a_normal_close() {
+        let eof = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no close_notify");
+        assert!(is_normal_close(&eof));
+    }
+
+    #[test]
+    fn real_failures_are_not_normal_closes() {
+        let bad = std::io::Error::new(std::io::ErrorKind::InvalidData, "frame too large");
+        assert!(!is_normal_close(&bad));
     }
 }

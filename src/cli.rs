@@ -25,6 +25,28 @@ pub enum Command {
         /// Configuration file (default: config.toml in the renfield config directory).
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Pairing mode: for a short time accept the key of a new source, after manual confirmation.
+        #[arg(long)]
+        accept_key: bool,
+        /// Seconds the pairing window stays open (with --accept-key).
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+    },
+    /// Pair this machine (source) with a dest started with `listen --accept-key`.
+    Pair {
+        /// Name to register the machine under.
+        name: String,
+        /// Address of dest, host:port.
+        addr: String,
+        /// Let dest command this machine too (this machine must also run `listen`).
+        #[arg(long)]
+        both: bool,
+        /// Port this machine listens on, told to dest with --both.
+        #[arg(long)]
+        listen_port: Option<u16>,
+        /// Replace an existing machine of the same name.
+        #[arg(long)]
+        force: bool,
     },
     /// Run a command on a paired machine and stream its output.
     Exec {
