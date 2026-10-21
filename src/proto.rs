@@ -200,6 +200,9 @@ pub enum Response {
     ExecDone {
         exit_code: Option<i32>,
         timed_out: bool,
+        /// The timeout dest actually applied (the request's, capped by dest's own maximum).
+        #[serde(default)]
+        limit_secs: Option<u64>,
     },
     /// Answer to `ReadFile`.
     FileText(ReadResult),

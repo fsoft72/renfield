@@ -19,3 +19,4 @@
 - A verified download whose final rename fails no longer leaves its `.renfield-part` file behind.
 - An unknown key that connects while the pairing window is open and tries to run something now gets "not authorized" (exit 202) instead of a generic remote error (207).
 - The MCP server ignores JSON-RPC responses sent by the client instead of answering them with an error.
+- MCP: the timeout message reports the limit dest actually applied (its own maximum may be lower than the requested one), and the remote_edit description explains how mixed line endings are matched.

@@ -342,3 +342,31 @@ async fn responses_from_the_client_are_ignored_but_garbage_is_not() {
         .unwrap();
     assert_eq!(neither["error"]["code"], -32600);
 }
+
+#[tokio::test]
+async fn edit_tool_description_warns_about_mixed_line_endings() {
+    let env = common::start().await;
+    let response = server_for(&env)
+        .handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+        .await
+        .unwrap();
+    let tools = response["result"]["tools"].as_array().unwrap();
+    let edit = tools.iter().find(|t| t["name"] == "remote_edit").unwrap();
+    let description = edit["description"].as_str().unwrap();
+    assert!(description.contains("mixed"), "{description}");
+}
+
+#[tokio::test]
+async fn timeout_message_reports_the_limit_dest_actually_applied() {
+    let env = common::start_with(renfield::server::ServerOptions {
+        max_timeout_secs: Some(1),
+        ..renfield::server::ServerOptions::default()
+    })
+    .await;
+    let args = json!({"machine": "srv", "command": "sleep 30", "timeout_secs": 30});
+    let started = Instant::now();
+    let response = call(&server_for(&env), "remote_exec", args).await;
+    assert!(started.elapsed() < Duration::from_secs(6));
+    let t = text(&response);
+    assert!(t.contains("killed after 1s"), "{t}");
+}

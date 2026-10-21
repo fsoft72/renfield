@@ -539,6 +539,7 @@ where
                 &Response::ExecDone {
                     exit_code: r.exit_code,
                     timed_out: r.timed_out,
+                    limit_secs: limit,
                 },
             )
             .await

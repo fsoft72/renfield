@@ -269,8 +269,9 @@ impl Server {
             None => "exit code: none (the process was terminated)\n".to_string(),
         };
         if outcome.timed_out {
+            let applied = outcome.limit_secs.unwrap_or(timeout);
             text.push_str(&format!(
-                "timed out: the command was killed after {timeout}s\n"
+                "timed out: the command was killed after {applied}s\n"
             ));
         }
         for (label, buffer) in [("stdout", out), ("stderr", err)] {
@@ -477,7 +478,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "remote_edit",
             &format!(
-                "Replace an exact string in a text file on a paired machine. Fails if old_string is not found, or is not unique unless replace_all is true. Line endings (LF or CRLF) are handled. {PATH_RULES}"
+                "Replace an exact string in a text file on a paired machine. Fails if old_string is not found, or is not unique unless replace_all is true. Line endings (LF or CRLF) are handled; a file with mixed endings (some lines LF, some CRLF) is matched literally, so write old_string with the exact endings of the lines it spans. {PATH_RULES}"
             ),
             json!({
                 "path": path("File to edit."),

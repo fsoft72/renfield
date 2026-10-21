@@ -44,6 +44,8 @@ pub struct ExecArgs {
 pub struct ExecOutcome {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    /// The timeout dest applied, if any.
+    pub limit_secs: Option<u64>,
 }
 
 /// Wraps any displayable failure into a local I/O error.
@@ -356,10 +358,12 @@ impl Conn {
                 Response::ExecDone {
                     exit_code,
                     timed_out,
+                    limit_secs,
                 } => {
                     return Ok(ExecOutcome {
                         exit_code,
                         timed_out,
+                        limit_secs,
                     });
                 }
                 Response::Error { message } => {
