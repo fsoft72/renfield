@@ -14,5 +14,6 @@ pub mod pairing;
 pub mod proto;
 pub mod server;
 pub mod store;
+pub mod timefmt;
 pub mod tls;
 pub mod transfer;

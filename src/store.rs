@@ -120,6 +120,11 @@ impl Authorized {
         });
     }
 
+    /// Returns the authorized key with this fingerprint.
+    pub fn find(&self, fingerprint: &str) -> Option<&AuthorizedKey> {
+        self.key.iter().find(|k| k.fingerprint == fingerprint)
+    }
+
     /// Tells whether a fingerprint is authorized.
     pub fn contains(&self, fingerprint: &str) -> bool {
         self.key.iter().any(|k| k.fingerprint == fingerprint)

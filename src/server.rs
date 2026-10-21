@@ -19,6 +19,7 @@ use crate::identity::Identity;
 use crate::pairing::{self, DestContext, Offer, Prompt};
 use crate::proto::{self, Frame, Request, Response, ShellKind, Stream};
 use crate::store::Authorized;
+use crate::timefmt::{format_utc, now_secs};
 use crate::tls::{self, PeerPolicy};
 use crate::transfer::{self, Incoming, TransferError};
 
@@ -154,13 +155,21 @@ async fn handle_connection<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let label = peer_label(&shared.policy, fingerprint);
     while let Some(request) = proto::recv::<_, Request>(stream).await? {
+        let operation = describe(&request);
+        let mut summary = String::from("ok");
         match request {
             Request::PairOffer {
                 source_name,
                 both,
                 source_listen_port,
             } => {
+                audit(
+                    &label,
+                    &format!("pairing offer from '{source_name}'"),
+                    "handled",
+                );
                 let ctx = DestContext {
                     policy: &shared.policy,
                     own_fingerprint: &shared.own_fingerprint,
@@ -180,6 +189,11 @@ where
                 .await;
             }
             _ if !shared.policy.is_authorized(fingerprint) => {
+                audit(
+                    &label,
+                    &operation.unwrap_or_default(),
+                    "refused: key not authorized",
+                );
                 let message = "this key is not authorized on this machine".to_string();
                 return proto::send(stream, &Response::Error { message }).await;
             }
@@ -189,28 +203,92 @@ where
                 cwd,
                 timeout_secs,
             } => {
-                handle_exec(stream, &shared.opts, command, shell, cwd, timeout_secs).await?;
+                handle_exec(
+                    stream,
+                    &shared.opts,
+                    command,
+                    shell,
+                    cwd,
+                    timeout_secs,
+                    &mut summary,
+                )
+                .await?;
             }
             Request::ReadFile { .. }
             | Request::WriteFile { .. }
             | Request::EditFile { .. }
             | Request::ListDir { .. } => {
                 let response = handle_file_request(request).await;
+                if let Response::Error { message } = &response {
+                    summary = format!("error: {message}");
+                }
                 proto::send(stream, &response).await?;
             }
             Request::PutFile { path, size } => {
-                if !handle_put(stream, &path, size).await? {
+                let in_sync = handle_put(stream, &path, size, &mut summary).await;
+                audit(&label, &operation.unwrap_or_default(), &summary);
+                if !in_sync? {
                     return Ok(());
                 }
+                continue;
             }
-            Request::GetFile { path } => handle_get(stream, &path).await?,
+            Request::GetFile { path } => handle_get(stream, &path, &mut summary).await?,
             Request::PairCommit | Request::PairAbort => {
                 let message = "unexpected pairing message, no pairing is in progress".to_string();
                 return proto::send(stream, &Response::Error { message }).await;
             }
         }
+        audit(&label, &operation.unwrap_or_default(), &summary);
     }
     Ok(())
+}
+
+/// The name shown in the audit log for a peer: its authorization label, else its key prefix.
+fn peer_label(policy: &FilePolicy, fingerprint: &str) -> String {
+    let label = Authorized::load(policy.dir())
+        .ok()
+        .and_then(|a| a.find(fingerprint).map(|k| k.label.clone()));
+    label.unwrap_or_else(|| fingerprint.chars().take(12).collect())
+}
+
+/// Describes a request for the audit log (nothing for the pairing messages, which log themselves).
+fn describe(request: &Request) -> Option<String> {
+    Some(match request {
+        Request::Exec { command, .. } => format!("exec '{}'", audit_text(command)),
+        Request::ReadFile { path, .. } => format!("read {}", audit_text(path)),
+        Request::WriteFile { path, .. } => format!("write {}", audit_text(path)),
+        Request::EditFile { path, .. } => format!("edit {}", audit_text(path)),
+        Request::ListDir { path, .. } => format!("list {}", audit_text(path)),
+        Request::PutFile { path, size } => format!("put {} ({size} bytes)", audit_text(path)),
+        Request::GetFile { path } => format!("get {}", audit_text(path)),
+        _ => return None,
+    })
+}
+
+/// Longest text shown for a command or path in the audit log.
+const AUDIT_MAX_CHARS: usize = 80;
+
+/// Flattens line breaks and shortens text so one request is one audit line.
+fn audit_text(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    if flat.chars().count() <= AUDIT_MAX_CHARS {
+        return flat;
+    }
+    let cut: String = flat.chars().take(AUDIT_MAX_CHARS).collect();
+    format!("{cut}...")
+}
+
+/// Formats one audit line: time, peer, operation and result.
+fn audit_line(secs: i64, peer: &str, operation: &str, result: &str) -> String {
+    format!("[{}] {peer} {operation} -> {result}", format_utc(secs))
+}
+
+/// Prints one audit line for a request served to a peer.
+fn audit(peer: &str, operation: &str, result: &str) {
+    println!("{}", audit_line(now_secs(), peer, operation, result));
 }
 
 /// Serves a file request on a blocking thread and turns any failure into an `Error` answer.
@@ -250,7 +328,12 @@ async fn handle_file_request(request: Request) -> Response {
 }
 
 /// Receives an uploaded file; returns false when the stream is out of sync and must be closed.
-async fn handle_put<S>(stream: &mut S, path: &str, size: u64) -> std::io::Result<bool>
+async fn handle_put<S>(
+    stream: &mut S,
+    path: &str,
+    size: u64,
+    summary: &mut String,
+) -> std::io::Result<bool>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -258,6 +341,7 @@ where
     let incoming = match Incoming::create(&target).await {
         Ok(i) => i,
         Err(e) => {
+            *summary = format!("error: {e}");
             proto::send(
                 stream,
                 &Response::Error {
@@ -273,8 +357,12 @@ where
         Ok(bytes) => proto::send(stream, &Response::TransferDone { size: bytes })
             .await
             .map(|_| true),
-        Err(TransferError::Stream(e)) => Err(e),
+        Err(TransferError::Stream(e)) => {
+            *summary = format!("error: {e}");
+            Err(e)
+        }
         Err(e) => {
+            *summary = format!("error: {e}");
             let in_sync = matches!(e, TransferError::Checksum);
             proto::send(
                 stream,
@@ -289,7 +377,7 @@ where
 }
 
 /// Sends a requested file, or an `Error` when it cannot be opened.
-async fn handle_get<S>(stream: &mut S, path: &str) -> std::io::Result<()>
+async fn handle_get<S>(stream: &mut S, path: &str, summary: &mut String) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -309,7 +397,10 @@ where
     .await;
     let (file, size) = match opened {
         Ok(v) => v,
-        Err(message) => return proto::send(stream, &Response::Error { message }).await,
+        Err(message) => {
+            *summary = format!("error: {message}");
+            return proto::send(stream, &Response::Error { message }).await;
+        }
     };
     proto::send(stream, &Response::TransferStart { size }).await?;
     match transfer::send_file(stream, file, size, &mut |_| {}).await {
@@ -327,6 +418,7 @@ async fn handle_exec<S>(
     shell: Option<ShellKind>,
     cwd: Option<String>,
     timeout_secs: Option<u64>,
+    summary: &mut String,
 ) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -362,6 +454,13 @@ where
     };
     let (result, forwarded) = tokio::join!(exec::run(spec, tx), forward);
     forwarded?;
+    *summary = match &result {
+        Ok(r) if r.timed_out => "killed after the timeout".to_string(),
+        Ok(r) => r
+            .exit_code
+            .map_or("exit none".to_string(), |c| format!("exit {c}")),
+        Err(e) => format!("error: {e:#}"),
+    };
     match result {
         Ok(r) => {
             proto::send(
@@ -409,5 +508,25 @@ mod tests {
     fn real_failures_are_not_normal_closes() {
         let bad = std::io::Error::new(std::io::ErrorKind::InvalidData, "frame too large");
         assert!(!is_normal_close(&bad));
+    }
+
+    #[test]
+    fn audit_line_has_timestamp_peer_operation_and_result() {
+        let line = audit_line(1_700_000_000, "laptop", "exec 'ls -la'", "exit 0");
+        assert_eq!(line, "[2023-11-14 22:13:20] laptop exec 'ls -la' -> exit 0");
+    }
+
+    #[test]
+    fn audit_shortens_long_text_and_flattens_newlines() {
+        let long = format!("echo {}\nsecond line", "x".repeat(300));
+        let shown = audit_text(&long);
+        assert!(
+            shown.chars().count() <= AUDIT_MAX_CHARS + 3,
+            "{}",
+            shown.len()
+        );
+        assert!(shown.ends_with("..."));
+        assert!(!shown.contains('\n'));
+        assert_eq!(audit_text("short"), "short");
     }
 }

@@ -32,6 +32,18 @@ pub enum Command {
         #[arg(long, default_value_t = 120)]
         timeout: u64,
     },
+    /// Show the machines this one can command.
+    List,
+    /// Forget a paired machine (the key it authorized for us stays valid on its side).
+    Remove {
+        /// Name of the machine in the registry.
+        name: String,
+    },
+    /// Manage the keys allowed to command this machine.
+    Authorized {
+        #[command(subcommand)]
+        action: AuthorizedAction,
+    },
     /// Run as an MCP server on stdio, giving Claude Code tools for the paired machines.
     Mcp,
     /// Copy a local file to a paired machine.
@@ -84,5 +96,17 @@ pub enum Command {
         /// The command line to run.
         #[arg(last = true, required = true)]
         command: Vec<String>,
+    },
+}
+
+/// Actions on the authorized keys of this machine.
+#[derive(Debug, Subcommand)]
+pub enum AuthorizedAction {
+    /// Show the keys that may command this machine.
+    List,
+    /// Remove a key, by label or fingerprint: its owner can no longer connect.
+    Revoke {
+        /// Label or full fingerprint shown by `authorized list`.
+        target: String,
     },
 }

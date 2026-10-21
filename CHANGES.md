@@ -10,3 +10,4 @@
 - Added remote text file operations: read (offset/limit, size cap), write (atomic, keeps CRLF), edit (exact unique string, keeps CRLF and permissions) and list (hidden files, metadata, recursive).
 - Added single file transfer in both directions (`put` / `get`): streamed in 256 KiB frames, SHA-256 verified before the file appears, partial files never left behind, progress line for big files.
 - Added the MCP server (`renfield mcp`, JSON-RPC over stdio) with seven tools: remote_exec, remote_read, remote_write, remote_edit, remote_list, remote_put, remote_get. Calls run concurrently; exec output is capped at 1 MiB per stream (tail kept) with a 120 s default timeout.
+- Added `list`, `remove`, `authorized list|revoke`, the reserved exit codes (200-207) verified end to end on the real binary, and an audit line on dest for every request (time, peer label, operation, result).

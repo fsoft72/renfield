@@ -148,9 +148,9 @@ pub async fn run(spec: ExecSpec, tx: mpsc::Sender<(Stream, Vec<u8>)>) -> Result<
         );
     }
     let (program, _) = command_line(spec.shell, &spec.command);
-    let mut child = build(&spec)
-        .spawn()
-        .with_context(|| format!("cannot start shell '{program}' on this machine"))?;
+    let mut child = build(&spec).spawn().with_context(|| {
+        format!("cannot start shell '{program}' on this machine (pick another with --shell)")
+    })?;
     let pid = child.id();
     let stdout = child.stdout.take().context("stdout not captured")?;
     let stderr = child.stderr.take().context("stderr not captured")?;
