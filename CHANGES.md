@@ -8,3 +8,4 @@
 - Added the dest server (listen) and streaming command execution (exec) with shell selection, working directory, timeout and process tree kill; config file with port, default_cwd and max_timeout_secs.
 - Added explicit two phase pairing: `listen --accept-key` (timed window, one attempt, manual confirmation) and `pair <name> <host:port> [--both] [--force]`; nothing is stored unless both humans confirm.
 - Added remote text file operations: read (offset/limit, size cap), write (atomic, keeps CRLF), edit (exact unique string, keeps CRLF and permissions) and list (hidden files, metadata, recursive).
+- Added single file transfer in both directions (`put` / `get`): streamed in 256 KiB frames, SHA-256 verified before the file appears, partial files never left behind, progress line for big files.

@@ -28,6 +28,16 @@ pub async fn dispatch(dir: &Path, command: Command) -> Result<i32, RenfieldError
             let window = accept_key.then(|| Duration::from_secs(timeout));
             listen(dir, port, config, window).await.map(|_| 0)
         }
+        Command::Put {
+            name,
+            local,
+            remote,
+        } => put(dir, &name, &local, &remote).await.map(|_| 0),
+        Command::Get {
+            name,
+            remote,
+            local,
+        } => get(dir, &name, &remote, &local).await.map(|_| 0),
         Command::Pair {
             name,
             addr,
@@ -134,4 +144,52 @@ pub async fn exec(
 fn write_flush<W: Write>(out: &mut W, bytes: &[u8]) {
     let _ = out.write_all(bytes);
     let _ = out.flush();
+}
+
+/// Files at least this big show a progress line.
+const PROGRESS_MIN_BYTES: u64 = 8 * 1024 * 1024;
+const MIB: u64 = 1024 * 1024;
+
+/// Returns a progress callback printing whole MiB on stderr (silent for small files).
+fn progress_printer() -> impl FnMut(u64, u64) + Send {
+    let mut last = u64::MAX;
+    move |done, total| {
+        if total < PROGRESS_MIN_BYTES {
+            return;
+        }
+        let mib = done / MIB;
+        if mib != last {
+            last = mib;
+            eprint!("\r{mib}/{} MiB", total / MIB);
+        }
+        if done == total {
+            eprintln!();
+        }
+    }
+}
+
+/// Uploads a local file to a paired machine.
+pub async fn put(dir: &Path, name: &str, local: &Path, remote: &str) -> Result<(), RenfieldError> {
+    let mut conn = client::connect(dir, name).await?;
+    let bytes = conn
+        .put_file(local, remote, &mut progress_printer())
+        .await?;
+    println!(
+        "{} -> {name}:{remote} ({bytes} bytes, checksum verified)",
+        local.display()
+    );
+    Ok(())
+}
+
+/// Downloads a file from a paired machine.
+pub async fn get(dir: &Path, name: &str, remote: &str, local: &Path) -> Result<(), RenfieldError> {
+    let mut conn = client::connect(dir, name).await?;
+    let bytes = conn
+        .get_file(remote, local, &mut progress_printer())
+        .await?;
+    println!(
+        "{name}:{remote} -> {} ({bytes} bytes, checksum verified)",
+        local.display()
+    );
+    Ok(())
 }

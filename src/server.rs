@@ -20,6 +20,7 @@ use crate::pairing::{self, DestContext, Offer, Prompt};
 use crate::proto::{self, Frame, Request, Response, ShellKind, Stream};
 use crate::store::Authorized;
 use crate::tls::{self, PeerPolicy};
+use crate::transfer::{self, Incoming, TransferError};
 
 /// Settings of a running dest.
 #[derive(Clone, Default)]
@@ -197,6 +198,12 @@ where
                 let response = handle_file_request(request).await;
                 proto::send(stream, &response).await?;
             }
+            Request::PutFile { path, size } => {
+                if !handle_put(stream, &path, size).await? {
+                    return Ok(());
+                }
+            }
+            Request::GetFile { path } => handle_get(stream, &path).await?,
             Request::PairCommit | Request::PairAbort => {
                 let message = "unexpected pairing message, no pairing is in progress".to_string();
                 return proto::send(stream, &Response::Error { message }).await;
@@ -239,6 +246,76 @@ async fn handle_file_request(request: Request) -> Response {
         Err(e) => Response::Error {
             message: format!("file operation failed: {e}"),
         },
+    }
+}
+
+/// Receives an uploaded file; returns false when the stream is out of sync and must be closed.
+async fn handle_put<S>(stream: &mut S, path: &str, size: u64) -> std::io::Result<bool>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let target = home::expand(path);
+    let incoming = match Incoming::create(&target).await {
+        Ok(i) => i,
+        Err(e) => {
+            proto::send(
+                stream,
+                &Response::Error {
+                    message: e.to_string(),
+                },
+            )
+            .await?;
+            return Ok(true);
+        }
+    };
+    proto::send(stream, &Response::TransferReady).await?;
+    match incoming.receive(stream, size, &mut |_| {}).await {
+        Ok(bytes) => proto::send(stream, &Response::TransferDone { size: bytes })
+            .await
+            .map(|_| true),
+        Err(TransferError::Stream(e)) => Err(e),
+        Err(e) => {
+            let in_sync = matches!(e, TransferError::Checksum);
+            proto::send(
+                stream,
+                &Response::Error {
+                    message: e.to_string(),
+                },
+            )
+            .await?;
+            Ok(in_sync)
+        }
+    }
+}
+
+/// Sends a requested file, or an `Error` when it cannot be opened.
+async fn handle_get<S>(stream: &mut S, path: &str) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let opened = async {
+        let file = tokio::fs::File::open(home::expand(path))
+            .await
+            .map_err(|e| format!("cannot open {path}: {e}"))?;
+        let meta = file
+            .metadata()
+            .await
+            .map_err(|e| format!("cannot read {path}: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!("{path} is not a regular file"));
+        }
+        Ok((file, meta.len()))
+    }
+    .await;
+    let (file, size) = match opened {
+        Ok(v) => v,
+        Err(message) => return proto::send(stream, &Response::Error { message }).await,
+    };
+    proto::send(stream, &Response::TransferStart { size }).await?;
+    match transfer::send_file(stream, file, size, &mut |_| {}).await {
+        Ok(()) => Ok(()),
+        Err(TransferError::Stream(e)) => Err(e),
+        Err(e) => Err(std::io::Error::other(e.to_string())),
     }
 }
 

@@ -163,6 +163,10 @@ pub enum Request {
     },
     /// List a directory.
     ListDir { path: String, recursive: bool },
+    /// Upload: dest prepares a file of `size` bytes, answers `TransferReady`, then receives data frames.
+    PutFile { path: String, size: u64 },
+    /// Download: dest answers `TransferStart`, then sends data frames.
+    GetFile { path: String },
     /// Offer this machine's key for pairing; `both` also asks dest to be able to command source.
     PairOffer {
         source_name: String,
@@ -194,6 +198,12 @@ pub enum Response {
     FileEdited { replacements: usize },
     /// Answer to `ListDir`.
     DirListing(ListResult),
+    /// Dest is ready to receive the uploaded file.
+    TransferReady,
+    /// Dest starts sending the requested file of `size` bytes.
+    TransferStart { size: u64 },
+    /// The upload was received, verified and saved.
+    TransferDone { size: u64 },
     /// Dest accepted the offered key and waits for the source to commit or abort.
     PairOffered { dest_name: String },
     /// The pairing was stored on dest.
@@ -234,4 +244,10 @@ pub struct ListResult {
     pub entries: Vec<DirEntry>,
     /// True when the listing was cut at the entry cap.
     pub truncated: bool,
+}
+
+/// Sent after the last data frame of a transfer: the SHA-256 of everything that was sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransferTrailer {
+    pub sha256: String,
 }

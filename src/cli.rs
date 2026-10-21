@@ -32,6 +32,24 @@ pub enum Command {
         #[arg(long, default_value_t = 120)]
         timeout: u64,
     },
+    /// Copy a local file to a paired machine.
+    Put {
+        /// Name of the machine in the registry.
+        name: String,
+        /// Local file to send.
+        local: PathBuf,
+        /// Destination path on the remote machine.
+        remote: String,
+    },
+    /// Copy a file from a paired machine to this one.
+    Get {
+        /// Name of the machine in the registry.
+        name: String,
+        /// File to fetch on the remote machine.
+        remote: String,
+        /// Local destination path.
+        local: PathBuf,
+    },
     /// Pair this machine (source) with a dest started with `listen --accept-key`.
     Pair {
         /// Name to register the machine under.

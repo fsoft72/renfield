@@ -12,6 +12,7 @@ use crate::identity::Identity;
 use crate::proto::{self, Frame, ListResult, ReadResult, Request, Response, ShellKind, Stream};
 use crate::store::Registry;
 use crate::tls;
+use crate::transfer::{self, Incoming, TransferError};
 
 /// Largest text accepted by `write_file` (bigger files go through `put`).
 pub const MAX_WRITE_BYTES: usize = 8 * 1024 * 1024;
@@ -214,6 +215,91 @@ impl Conn {
             Response::DirListing(l) => Ok(l),
             other => Err(self.unexpected(other)),
         }
+    }
+
+    /// Maps a transfer failure to a renfield error.
+    fn transfer_error(&self, e: TransferError) -> RenfieldError {
+        match e {
+            TransferError::Stream(io) => self.io(io),
+            TransferError::Protocol(m) => RenfieldError::Protocol(m),
+            other => RenfieldError::Io(other.to_string()),
+        }
+    }
+
+    /// Uploads a local file; `progress(done, total)` is called as bytes are sent. Returns the size.
+    pub async fn put_file(
+        &mut self,
+        local: &Path,
+        remote: &str,
+        progress: &mut (dyn FnMut(u64, u64) + Send),
+    ) -> Result<u64, RenfieldError> {
+        let cannot = |e: std::io::Error| {
+            RenfieldError::Io(format!("cannot read local file {}: {e}", local.display()))
+        };
+        let file = tokio::fs::File::open(local).await.map_err(cannot)?;
+        let meta = file.metadata().await.map_err(cannot)?;
+        if !meta.is_file() {
+            return Err(RenfieldError::Usage(format!(
+                "{} is not a regular file",
+                local.display()
+            )));
+        }
+        let size = meta.len();
+        match self
+            .call(Request::PutFile {
+                path: remote.into(),
+                size,
+            })
+            .await?
+        {
+            Response::TransferReady => {}
+            other => return Err(self.unexpected(other)),
+        }
+        transfer::send_file(&mut self.stream, file, size, &mut |done| {
+            progress(done, size)
+        })
+        .await
+        .map_err(|e| self.transfer_error(e))?;
+        match self.recv_response().await? {
+            Response::TransferDone { size } => Ok(size),
+            Response::Error { message } => Err(RenfieldError::Remote(format!(
+                "'{}' reported: {message}",
+                self.machine
+            ))),
+            other => Err(self.unexpected(other)),
+        }
+    }
+
+    /// Downloads a remote file; the local file appears only when the checksum matches. Returns the size.
+    pub async fn get_file(
+        &mut self,
+        remote: &str,
+        local: &Path,
+        progress: &mut (dyn FnMut(u64, u64) + Send),
+    ) -> Result<u64, RenfieldError> {
+        let incoming = Incoming::create(local)
+            .await
+            .map_err(|e| self.transfer_error(e))?;
+        let size = match self
+            .call(Request::GetFile {
+                path: remote.into(),
+            })
+            .await
+        {
+            Ok(Response::TransferStart { size }) => size,
+            Ok(other) => {
+                incoming.discard().await;
+                return Err(self.unexpected(other));
+            }
+            Err(e) => {
+                incoming.discard().await;
+                return Err(e);
+            }
+        };
+        incoming
+            .receive(&mut self.stream, size, &mut |done| progress(done, size))
+            .await
+            .map_err(|e| self.transfer_error(e))
     }
 
     /// Runs a command remotely, calling `on_output` for every chunk as it arrives.
