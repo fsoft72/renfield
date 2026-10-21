@@ -77,14 +77,14 @@ impl Incoming {
     ) -> Result<u64, TransferError> {
         let result = self.receive_into_part(stream, size, progress).await;
         match result {
-            Ok(()) => {
-                tokio::fs::rename(&self.part, &self.target)
-                    .await
-                    .map_err(|e| {
-                        TransferError::Local(format!("cannot save {}: {e}", self.target.display()))
-                    })?;
-                Ok(size)
-            }
+            Ok(()) => match tokio::fs::rename(&self.part, &self.target).await {
+                Ok(()) => Ok(size),
+                Err(e) => {
+                    let message = format!("cannot save {}: {e}", self.target.display());
+                    self.discard().await;
+                    Err(TransferError::Local(message))
+                }
+            },
             Err(e) => {
                 self.discard().await;
                 Err(e)

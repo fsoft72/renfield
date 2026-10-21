@@ -189,3 +189,31 @@ async fn connection_drop_mid_transfer_leaves_no_partial() {
         "files left behind"
     );
 }
+
+#[tokio::test]
+async fn failed_final_rename_leaves_no_part_file() {
+    let work = tempfile::tempdir().unwrap();
+    let target = work.path().join("occupied");
+    std::fs::create_dir(&target).unwrap();
+    let (mut tx, mut rx) = tokio::io::duplex(1 << 20);
+    let incoming = Incoming::create(&target).await.unwrap();
+    let data = vec![1u8, 2, 3];
+    proto::write_frame(&mut tx, &Frame::Data(data.clone()))
+        .await
+        .unwrap();
+    let trailer = TransferTrailer {
+        sha256: hex::encode(Sha256::digest(&data)),
+    };
+    proto::send(&mut tx, &trailer).await.unwrap();
+    let err = incoming.receive(&mut rx, 3, &mut |_| {}).await.unwrap_err();
+    assert!(matches!(err, TransferError::Local(_)), "{err:?}");
+    let names: Vec<_> = std::fs::read_dir(work.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        names.len(),
+        1,
+        "a verified part file was left behind: {names:?}"
+    );
+}
